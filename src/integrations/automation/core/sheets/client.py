@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .auth import load_credentials
+from src.shared import auth_state
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,7 @@ class SheetsClient:
     """Read workbook tables and atomically update their cell values."""
 
     def __init__(self, spreadsheet_id: str):
+        auth_state.require_available("sheets")
         try:
             from googleapiclient.discovery import build
         except ImportError:
@@ -25,6 +27,16 @@ class SheetsClient:
         credentials = load_credentials()
         self._service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
         self.spreadsheet_id = spreadsheet_id
+
+    def check_access(self) -> None:
+        """Read minimal workbook metadata once to verify OAuth and file access."""
+        try:
+            self._service.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id,
+                fields="spreadsheetId",
+            ).execute()
+        except Exception:
+            raise RuntimeError("Google Sheets rejected the authorization or workbook access check.") from None
 
     def metadata(self) -> dict[str, Any]:
         """Return sheet IDs and grid sizes required for safe updates."""

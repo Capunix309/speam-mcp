@@ -10,6 +10,7 @@ from ..core import jira
 from ..core.normalize import worklog_record
 from ..core.settings import AutomationSettings, load_settings
 from .workbook import update_workbook
+from src.shared import auth_state
 
 
 def sync_sprint(
@@ -17,6 +18,7 @@ def sync_sprint(
     *, settings: AutomationSettings | None = None, sheets_client=None,
 ) -> dict[str, Any]:
     """Fetch all source data and update the workbook only after validation passes."""
+    auth_state.require_available("sheets")
     settings = settings or load_settings()
     sprint = jira.resolve_sprint(settings, sprint_name)
     sprint_name = sprint["name"]

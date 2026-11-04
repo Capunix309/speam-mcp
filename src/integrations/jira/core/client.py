@@ -10,6 +10,7 @@ import urllib.request
 from typing import Any
 
 from src.shared import config
+from src.shared import auth_state
 
 
 def _settings():
@@ -43,8 +44,10 @@ def _path_url(path: str, params: dict[str, str] | None = None) -> str:
 
 
 def request(method: str, path: str, params: dict[str, str] | None = None,
-            body: dict[str, Any] | None = None) -> Any:
+            body: dict[str, Any] | None = None, *, _skip_auth_check: bool = False) -> Any:
     """Send one authenticated request to a Jira REST resource."""
+    if not _skip_auth_check:
+        auth_state.require_available("jira")
     settings = _settings()
     headers = {"Accept": "application/json"}
     payload = None

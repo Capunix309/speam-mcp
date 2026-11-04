@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 from . import config
+from src.shared import auth_state
 
 
 def normalize_space_path(space: str) -> str:
@@ -51,12 +52,15 @@ def page_url(space: str, page: str, suffix: str = "") -> str:
     return wiki_url(path)
 
 
-def request(method: str, url: str, body: bytes | None = None, content_type: str | None = None) -> tuple[bytes, str]:
+def request(method: str, url: str, body: bytes | None = None, content_type: str | None = None,
+            *, _skip_auth_check: bool = False) -> tuple[bytes, str]:
     """Send a REST request and return its payload and content type."""
     headers = {"Accept": "application/json, application/xml;q=0.9, */*;q=0.8"}
     if content_type:
         headers["Content-Type"] = content_type
     settings = config.current()
+    if not _skip_auth_check:
+        auth_state.require_available("xwiki")
     if method.upper() not in {"GET", "HEAD", "OPTIONS"} and settings.read_only:
         raise PermissionError(f"The {settings.name} XWiki is read-only.")
     if settings.username:
