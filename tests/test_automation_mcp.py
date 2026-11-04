@@ -176,9 +176,10 @@ class AutomationMCPTests(unittest.TestCase):
             patch.object(config, "validate_config"),
             patch.object(config, "integration", side_effect=lambda name: type("State", (), {"enabled": False})()),
             patch.object(config, "automation_settings", return_value={"enabled": False}),
+            patch.object(combined_server.auth_check, "check_enabled_integrations"),
         ):
             server = combined_server.create_server()
-        self.assertEqual(server._tool_manager.list_tools(), [])
+        self.assertEqual([tool.name for tool in server._tool_manager.list_tools()], ["get_auth_status"])
 
     def test_automation_enabled_registers_its_tool_in_the_combined_server(self):
         from src import server as combined_server
@@ -187,11 +188,12 @@ class AutomationMCPTests(unittest.TestCase):
             patch.object(config, "validate_config"),
             patch.object(config, "integration", side_effect=lambda name: type("State", (), {"enabled": False})()),
             patch.object(config, "automation_settings", return_value={"enabled": True}),
+            patch.object(combined_server.auth_check, "check_enabled_integrations"),
         ):
             server = combined_server.create_server()
         self.assertEqual(
             [tool.name for tool in server._tool_manager.list_tools()],
-            ["sync_sprint_sheet"],
+            ["sync_sprint_sheet", "get_auth_status"],
         )
 
     def test_resolves_exact_sprint_without_changing_jira_dates(self):

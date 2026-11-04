@@ -50,7 +50,7 @@ Jira custom-field IDs belong on each `[[integrations.jira.projects]]` entry, bec
 
 ### Credentials and tool visibility
 
-The `username_env` and `password_env` settings in `config.toml` name the variables to set in `.env`. The example file shows the expected variable names; replace its placeholder values with your credentials. Jira checks credentials when a Jira tool is called. XWiki checks them when the server starts.
+The `username_env` and `password_env` settings in `config.toml` name the variables to set in `.env`. The example file shows the expected variable names; replace its placeholder values with your credentials. At startup, the server checks Jira and XWiki once, and checks Google Sheets OAuth plus access to the configured workbook when automation is enabled. A failed check does not prevent startup. The affected integration is blocked for that server process; run `get_auth_status` for a safe diagnostic and user guidance. Correct the credentials before restarting the MCP client. The server does not retry failed checks automatically.
 
 ### Configure sprint-sheet automation
 
@@ -150,6 +150,8 @@ Claude Code starts project `.mcp.json` servers from the project directory; `PYTH
 To run the server manually for debugging only, open a terminal in the MCP-tools repository and run `python -m src.server`.
 
 ## Jira tools
+
+- `get_auth_status` (read) reports the startup authentication state of enabled and disabled integrations. If a service reports `AUTH_FAILURE`, tell the user which service failed, ask them to correct its credentials or authorization, and do not restart the MCP server or Codex/Claude app until they have done so. The service remains blocked until a later server start.
 
 - `jira_search` (read) searches configured projects by text, issue type, status, assignee, sprint, or update date. Omit `project` to search all configured projects.
 - `jira_get_issue` (read) returns issue details, optionally including comments, worklogs, change history, or an epic's child issues.

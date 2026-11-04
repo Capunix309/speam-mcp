@@ -237,13 +237,5 @@ def automation_settings() -> dict:
 
 
 def validate_config() -> None:
-    """Validate central settings and credentials required by enabled integrations."""
-    data = _read_config()
-    if data["integrations"]["xwiki"]["enabled"]:
-        settings = integration("xwiki")
-        if bool(settings.username_env) != bool(settings.password_env):
-            raise ValueError("Configure both XWiki credential environment names.")
-        if settings.username_env and (not settings.username or not settings.password):
-            raise ValueError(
-                f"Set {settings.username_env} and {settings.password_env} in {ENV_PATH}."
-            )
+    """Validate central settings without requiring live service credentials."""
+    _read_config()
