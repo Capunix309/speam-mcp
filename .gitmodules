@@ -1,0 +1,3 @@
+[submodule ".team-skills"]
+	path = .team-skills
+	url = git@ssh.gitlab.uliege.be:SPEAM/2026-2027/team5-labg-tsc/team-skills.git
