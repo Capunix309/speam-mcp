@@ -47,16 +47,32 @@ def list_sprints(settings: AutomationSettings) -> list[dict[str, Any]]:
 
 def resolve_sprint(settings: AutomationSettings, sprint_name: str) -> dict[str, Any]:
     """Resolve an exact sprint name on the configured board."""
-    requested = sprint_name.strip()
-    if not requested:
-        raise ValueError("sprint_name cannot be empty.")
-    matches = [item for item in list_sprints(settings) if item.get("name") == requested]
-    if not matches:
-        raise ValueError(f"No sprint named '{requested}' exists on board {settings.board_id}.")
-    if len(matches) > 1:
-        ids = ", ".join(str(item.get("id")) for item in matches)
-        raise ValueError(f"Sprint name '{requested}' is ambiguous on board {settings.board_id}; matching IDs: {ids}.")
-    return dict(matches[0])
+    return resolve_sprints(settings, [sprint_name])[0]
+
+
+def resolve_sprints(settings: AutomationSettings, sprint_names: list[str]) -> list[dict[str, Any]]:
+    """Resolve distinct exact sprint names in one read of the configured board."""
+    if not sprint_names:
+        raise ValueError("sprint_names must contain at least one exact Jira sprint name.")
+    requested_names = [name.strip() if isinstance(name, str) else "" for name in sprint_names]
+    if any(not name for name in requested_names):
+        raise ValueError("Every value in sprint_names must be a non-empty sprint name.")
+    if len(requested_names) != len(set(requested_names)):
+        raise ValueError("sprint_names must not contain duplicate names.")
+
+    available = list_sprints(settings)
+    result = []
+    for requested in requested_names:
+        matches = [item for item in available if item.get("name") == requested]
+        if not matches:
+            raise ValueError(f"No sprint named '{requested}' exists on board {settings.board_id}.")
+        if len(matches) > 1:
+            ids = ", ".join(str(item.get("id")) for item in matches)
+            raise ValueError(
+                f"Sprint name '{requested}' is ambiguous on board {settings.board_id}; matching IDs: {ids}."
+            )
+        result.append(dict(matches[0]))
+    return result
 
 
 def list_sprint_issues(sprint_id: int, story_points_field: str) -> list[dict[str, Any]]:

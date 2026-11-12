@@ -171,9 +171,11 @@ Every Jira tool is scoped to projects in `config.toml`; read-only projects rejec
 
 ## Automation tool
 
-- `sync_sprint_sheet` (write) fetches sprint issues, story points, and project worklogs from Jira, then updates the existing multi-sprint Google Sheet, formulas, analysis, and charts. Provide the exact sprint name; optional start and end dates override the reporting window. Each sync replaces that sprint's Worklogs rows from the current Jira snapshot, while preserving rows for other sprints, so reruns do not create duplicates.
+- `sync_sprint_sheet` (write) fetches sprint issues, story points, and project worklogs from Jira, then updates the existing multi-sprint Google Sheet, formulas, analysis, and charts. For one sprint, provide its exact name as `sprint_name`. To combine subsprints for one review, provide the review label as `sprint_name` and the exact child Jira sprint names in `sprint_names`; the tool unions their issues and uses the earliest child start and latest child end as the reporting window. Optional `start_date` and `end_date` values override the corresponding window boundary. Each sync replaces that review label's Worklogs rows from the current Jira snapshot, while preserving rows for other labels, so reruns do not create duplicates.
 
-The sync includes project worklogs within the sprint date window, even when their issue is outside that sprint. The tool is a write and follows the MCP client's configured write approval behavior.
+The sync includes project worklogs within the reporting window, even when their issue is outside the selected sprint or subsprints. For a multi-subsprint review, it writes those worklogs under the parent review label so the Analysis selector and charts cover the whole review window. The tool is a write and follows the MCP client's configured write approval behavior.
+
+For a given review, sync either the individual subsprints or one parent roll-up. Do not do both in the same workbook: each selection label is retained in the multi-sprint data, so syncing both would make `All sprints` count the same worklogs and issue scope more than once.
 
 ## XWiki tools
 

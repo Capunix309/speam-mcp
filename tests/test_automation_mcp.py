@@ -212,6 +212,78 @@ class AutomationMCPTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "IDs: 1, 2"):
                 jira.resolve_sprint(settings(), "Sprint X")
 
+    def test_resolves_multiple_exact_sprint_names_from_one_board_snapshot(self):
+        sprints = [
+            {"id": 1, "name": "Sprint 1A"},
+            {"id": 2, "name": "Sprint 1B"},
+            {"id": 3, "name": "Sprint 1C"},
+        ]
+        with patch.object(jira, "list_sprints", return_value=sprints) as list_mock:
+            resolved = jira.resolve_sprints(settings(), ["Sprint 1A", "Sprint 1B", "Sprint 1C"])
+        self.assertEqual([item["id"] for item in resolved], [1, 2, 3])
+        list_mock.assert_called_once()
+
+    def test_multi_sprint_sync_aggregates_child_issues_and_uses_full_window(self):
+        fake_settings = settings()
+        sprints = [
+            {"id": 1, "name": "Sprint 1A", "startDate": "2026-10-01T00:00:00Z",
+             "endDate": "2026-10-14T23:59:00Z"},
+            {"id": 2, "name": "Sprint 1B", "startDate": "2026-10-15T00:00:00Z",
+             "endDate": "2026-10-28T23:59:00Z"},
+            {"id": 3, "name": "Sprint 1C", "startDate": "2026-10-29T00:00:00Z",
+             "endDate": "2026-11-11T23:59:00Z"},
+        ]
+        child_issues = [
+            [issue("ABC-1", "First task"), issue("ABC-2", "Carried task")],
+            [issue("ABC-2", "Carried task"), issue("ABC-3", "Second task")],
+            [issue("ABC-4", "Third task")],
+        ]
+        in_window = worklog("1", "ABC-1")
+        in_window["started"] = "2026-11-02T12:30:00Z"
+        outside = worklog("2", "ABC-1")
+        outside["started"] = "2026-11-12T12:30:00Z"
+        result_from_sheet = {
+            "start_date": "2026-10-01", "end_date": "2026-11-11",
+            "issues_updated": 4, "worklogs_in_window": 1, "worklog_hours": 1.0,
+        }
+        with (
+            patch("src.integrations.automation.sync.service.jira.resolve_sprints", return_value=sprints),
+            patch("src.integrations.automation.sync.service.jira.list_sprint_issues",
+                  side_effect=child_issues) as list_issue_mock,
+            patch("src.integrations.automation.sync.service.jira.list_project_issues",
+                  return_value=[issue(f"ABC-{i}") for i in range(1, 5)]),
+            patch("src.integrations.automation.sync.service.jira.collect_worklogs", return_value=[
+                {"issue": issue("ABC-1"), "worklog": in_window},
+                {"issue": issue("ABC-1"), "worklog": outside},
+            ]),
+            patch("src.integrations.automation.sync.service.update_workbook",
+                  return_value=result_from_sheet) as update,
+        ):
+            result = sync_sprint(
+                "Sprint 1", sprint_names=["Sprint 1A", "Sprint 1B", "Sprint 1C"],
+                settings=fake_settings,
+            )
+
+        self.assertEqual(update.call_args.args[1:4], (
+            "Sprint 1", date(2026, 10, 1), date(2026, 11, 11),
+        ))
+        self.assertEqual([item["key"] for item in update.call_args.args[4]], [
+            "ABC-1", "ABC-2", "ABC-3", "ABC-4",
+        ])
+        self.assertEqual([item["id"] for item in update.call_args.args[5]], ["1"])
+        self.assertEqual(update.call_args.args[5][0]["cells"][32], "Sprint 1")
+        self.assertEqual(list_issue_mock.call_count, 3)
+        self.assertEqual(result["included_sprints"], ["Sprint 1A", "Sprint 1B", "Sprint 1C"])
+
+    def test_multi_sprint_sync_rejects_a_label_that_matches_a_child(self):
+        sprint = {"id": 1, "name": "Sprint 1A", "startDate": "2026-10-01T00:00:00Z",
+                  "endDate": "2026-10-14T00:00:00Z"}
+        with (
+            patch("src.integrations.automation.sync.service.jira.resolve_sprints", return_value=[sprint]),
+            self.assertRaisesRegex(ValueError, "distinct from every included"),
+        ):
+            sync_sprint("Sprint 1A", sprint_names=["Sprint 1A"], settings=settings())
+
     def test_project_issue_fetch_paginates_and_requests_story_points(self):
         with patch.object(jira, "request", side_effect=[
             {"issues": [{"key": "ABC-1"}], "total": 2},
