@@ -2,29 +2,34 @@
 
 from __future__ import annotations
 
-from urllib.parse import quote
-
 from . import auth_state, config
 
 
-def _record_check(name: str, check) -> None:
+def _record_check(name: str, check, description: str) -> None:
     try:
         check()
     except Exception as error:
-        auth_state.set_status(name, "AUTH_FAILURE", auth_state.safe_failure_diagnostic(error))
+        auth_state.set_status(
+            name,
+            "AUTH_FAILURE",
+            auth_state.safe_failure_diagnostic(error),
+            description,
+        )
     else:
-        auth_state.set_status(name, "READY", "Startup authentication check succeeded.")
+        auth_state.set_status(name, "READY", "Startup check succeeded.", description)
 
 
 def check_xwiki() -> None:
-    """Check credentials against the configured default wiki user resource."""
+    """Check XWiki access using the legacy page REST API available on 15.10."""
     from ..integrations.xwiki.core import config as xwiki_config
-    from ..integrations.xwiki.core.client import request, wiki_url
+    from ..integrations.xwiki.core.client import page_url, request
 
     settings = xwiki_config.current()
     if not settings.username or not settings.password:
         raise RuntimeError("XWiki credentials are not configured.")
-    request("GET", wiki_url(f"users/{quote(settings.username, safe='')}"), _skip_auth_check=True)
+    # The /users REST resource was added in XWiki 18.2. Use the standard home
+    # page rather than XWikiPreferences, which may be restricted to administrators.
+    request("GET", page_url("Main", "WebHome"), _skip_auth_check=True)
 
 
 def check_jira() -> None:
@@ -47,14 +52,18 @@ def check_enabled_integrations() -> None:
     """Check enabled services once, retaining failures without stopping startup."""
     auth_state.reset()
     if config.integration("jira").enabled:
-        _record_check("jira", check_jira)
+        _record_check("jira", check_jira, "GET Jira current-user REST endpoint")
     else:
         auth_state.set_status("jira", "DISABLED", "Integration is disabled.")
     if config.integration("xwiki").enabled:
-        _record_check("xwiki", check_xwiki)
+        _record_check(
+            "xwiki",
+            check_xwiki,
+            "GET Main.WebHome through the legacy page REST API in the default wiki",
+        )
     else:
         auth_state.set_status("xwiki", "DISABLED", "Integration is disabled.")
     if config.automation_settings().get("enabled", False):
-        _record_check("sheets", check_sheets)
+        _record_check("sheets", check_sheets, "Read metadata for the configured Google spreadsheet")
     else:
         auth_state.set_status("sheets", "DISABLED", "Google Sheets automation is disabled.")

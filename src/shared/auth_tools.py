@@ -14,20 +14,27 @@ def register(server) -> None:
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def get_auth_status() -> str:
-        """Report startup authentication results. If any service is AUTH_FAILURE,
-        tell the user which service failed and ask them to correct its credentials
-        or authorization. Do not restart the MCP server or its Codex/Claude app
-        until credentials are corrected; repeated startup attempts can lock the
-        account. The failed service remains blocked until the next server start.
+        """Report each startup check and a safe, cause-specific failure diagnosis.
+
+        Do not assume every AUTH_FAILURE means invalid credentials. Use the check
+        and diagnostic to distinguish rejected authentication, denied access,
+        missing resources, configuration errors, and connectivity failures. The
+        failed integration remains blocked until the underlying cause is fixed
+        and the server starts again.
         """
         return json.dumps({
             "integrations": {
-                name: {"state": value.state, "diagnostic": value.diagnostic}
+                name: {
+                    "state": value.state,
+                    "check": value.check,
+                    "diagnostic": value.diagnostic,
+                }
                 for name, value in auth_state.all_statuses().items()
             },
             "assistant_instruction": (
-                "Report any AUTH_FAILURE to the user, ask them to correct credentials, "
-                "and do not restart the MCP server or Codex/Claude app until correction. "
-                "The service remains blocked until a later server start."
+                "Report the failed check and its diagnostic. Do not assume credentials are wrong: "
+                "follow the reported cause and recommend correcting that setting, access, endpoint, "
+                "or network issue as appropriate. The failed integration remains blocked until the "
+                "cause is fixed and the MCP server starts again."
             ),
         }, ensure_ascii=False, indent=2)

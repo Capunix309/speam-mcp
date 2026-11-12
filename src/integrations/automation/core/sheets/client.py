@@ -35,8 +35,13 @@ class SheetsClient:
                 spreadsheetId=self.spreadsheet_id,
                 fields="spreadsheetId",
             ).execute()
-        except Exception:
-            raise RuntimeError("Google Sheets rejected the authorization or workbook access check.") from None
+        except Exception as error:
+            status = getattr(getattr(error, "resp", None), "status", None)
+            if isinstance(status, int):
+                raise RuntimeError(f"Google Sheets returned HTTP {status}") from None
+            raise RuntimeError(
+                f"Google Sheets access check failed ({type(error).__name__})."
+            ) from None
 
     def metadata(self) -> dict[str, Any]:
         """Return sheet IDs and grid sizes required for safe updates."""
