@@ -15,23 +15,48 @@ from src.shared import auth_state
 
 def sync_sprint(
     sprint_name: str, start_date: str | None = None, end_date: str | None = None,
-    *, settings: AutomationSettings | None = None, sheets_client=None,
+    *, sprint_names: list[str] | None = None,
+    settings: AutomationSettings | None = None, sheets_client=None,
 ) -> dict[str, Any]:
     """Fetch all source data and update the workbook only after validation passes."""
     auth_state.require_available("sheets")
     settings = settings or load_settings()
-    sprint = jira.resolve_sprint(settings, sprint_name)
-    sprint_name = sprint["name"]
-    start = _override_date(start_date, "start_date") or jira.sprint_date(
-        sprint.get("startDate"), field="start date", sprint_name=sprint_name, timezone=settings.timezone,
-    )
-    end = _override_date(end_date, "end_date") or jira.sprint_date(
-        sprint.get("endDate"), field="end date", sprint_name=sprint_name, timezone=settings.timezone,
-    )
+    requested_start = _override_date(start_date, "start_date")
+    requested_end = _override_date(end_date, "end_date")
+    if sprint_names is None:
+        sprint = jira.resolve_sprint(settings, sprint_name)
+        sprint_name = sprint["name"]
+        start = requested_start or jira.sprint_date(
+            sprint.get("startDate"), field="start date", sprint_name=sprint_name, timezone=settings.timezone,
+        )
+        end = requested_end or jira.sprint_date(
+            sprint.get("endDate"), field="end date", sprint_name=sprint_name, timezone=settings.timezone,
+        )
+        sprints = [sprint]
+        sprint_issues = jira.list_sprint_issues(int(sprint["id"]), settings.story_points_field)
+    else:
+        if not isinstance(sprint_names, list):
+            raise ValueError("sprint_names must be a list of exact Jira sprint names.")
+        sprint_name = sprint_name.strip()
+        if not sprint_name:
+            raise ValueError("sprint_name must be a non-empty review name when sprint_names is provided.")
+        if sprint_name == "All sprints":
+            raise ValueError("sprint_name cannot be the reserved workbook selector 'All sprints'.")
+        sprints = jira.resolve_sprints(settings, sprint_names)
+        if sprint_name in {sprint["name"] for sprint in sprints}:
+            raise ValueError("Use a review label distinct from every included Jira sprint name.")
+        starts = [jira.sprint_date(
+            sprint.get("startDate"), field="start date", sprint_name=sprint["name"], timezone=settings.timezone,
+        ) for sprint in sprints] if requested_start is None else []
+        ends = [jira.sprint_date(
+            sprint.get("endDate"), field="end date", sprint_name=sprint["name"], timezone=settings.timezone,
+        ) for sprint in sprints] if requested_end is None else []
+        start = requested_start or min(starts)
+        end = requested_end or max(ends)
+        sprint_issues = _combined_sprint_issues(settings, sprints)
     if start > end:
         raise ValueError("The sprint start date must be on or before its end date.")
 
-    sprint_issues = jira.list_sprint_issues(int(sprint["id"]), settings.story_points_field)
     project_issues = jira.list_project_issues(
         settings.project_key, settings.story_points_field, settings.epic_link_field,
     )
@@ -49,6 +74,8 @@ def sync_sprint(
     )
     result["project"] = settings.project_key
     result["board_id"] = settings.board_id
+    if sprint_names is not None:
+        result["included_sprints"] = [sprint["name"] for sprint in sprints]
     return result
 
 
@@ -83,6 +110,21 @@ def _validate_issues(settings: AutomationSettings, sprint_issues: list[dict], pr
     missing = sorted(set(keys) - project_keys)
     if missing:
         raise ValueError(f"Project search did not return sprint issues: {', '.join(missing)}.")
+
+
+def _combined_sprint_issues(
+    settings: AutomationSettings, sprints: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Union issues from selected subsprints, retaining one row per Jira issue."""
+    combined: dict[str, dict[str, Any]] = {}
+    for sprint in sprints:
+        issues = jira.list_sprint_issues(int(sprint["id"]), settings.story_points_field)
+        keys = [issue.get("key") for issue in issues]
+        if any(not key for key in keys) or len(keys) != len(set(keys)):
+            raise ValueError(f"Jira returned missing or duplicate issue keys for sprint '{sprint['name']}'.")
+        for issue in issues:
+            combined.setdefault(issue["key"], issue)
+    return list(combined.values())
 
 
 def _validate_worklog_ids(worklogs: list[dict]) -> None:
