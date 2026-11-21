@@ -1,6 +1,7 @@
 """Start the combined XWiki, Jira, and automation MCP server over stdio."""
 
 import sys
+import threading
 
 from mcp.server.fastmcp import FastMCP
 
@@ -20,7 +21,7 @@ def create_server() -> FastMCP:
 
     server = FastMCP("mcp-tools")
     tool_server = ToolPolicyServer(server)
-    auth_check.check_enabled_integrations()
+    auth_check.prepare_enabled_integrations()
     enabled: list[str] = []
     if config.integration("xwiki").enabled:
         from .integrations.xwiki.tools.registry import register_all
@@ -43,7 +44,14 @@ def create_server() -> FastMCP:
 
 
 def main() -> None:
-    create_server().run(transport="stdio")
+    server = create_server()
+    checks = threading.Thread(
+        target=auth_check.run_enabled_integration_checks,
+        name="mcp-startup-auth-checks",
+        daemon=True,
+    )
+    checks.start()
+    server.run(transport="stdio")
 
 
 if __name__ == "__main__":

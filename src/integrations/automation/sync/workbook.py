@@ -34,7 +34,8 @@ def update_workbook(
     existing_worklogs = client.values("Worklogs", worklog_range)
     task_rows = client.values("Task Analysis", "A1:M1000")
     person_rows = client.values("Person Task Effort", "A1:J2000")
-    setup_rows = client.values("Sprint Setup", "A1:C100")
+    setup_rows = client.values("Sprint Setup", "A1:G100")
+    analysis_rows = client.values("Analysis", "A1:N12")
     if not existing_worklogs or not task_rows or not person_rows or not setup_rows:
         raise ValueError("One or more workbook tables are missing their header row.")
 
@@ -44,6 +45,18 @@ def update_workbook(
     )
     setup_values = _sprint_setup(setup_rows, sprint_name, start_date, end_date)
     requests: list[dict[str, Any]] = []
+    # The original budget occupied rows 1–7 with an empty row 8 before the
+    # analysis content. The two-level headers and grand-total row need one
+    # additional row; detect the legacy layout so reruns remain idempotent.
+    has_budget_subheaders = len(analysis_rows) > 2 and any(
+        value == "Value" for value in analysis_rows[2][2:]
+    )
+    if not has_budget_subheaders:
+        requests.append({"insertDimension": {
+            "range": {"sheetId": sheets["Analysis"]["sheetId"], "dimension": "ROWS",
+                      "startIndex": 8, "endIndex": 9},
+            "inheritFromBefore": False,
+        }})
     last_task_row = issue_tables._next_empty_row(task_rows, 0) - 1
     last_person_row = issue_tables._next_empty_row(person_rows, 0) - 1
     new_task_rows = [index for index, _ in task_updates if index > last_task_row]
@@ -92,22 +105,47 @@ def update_workbook(
 
     requests.append(update_cells_request(sheets["Sprint Setup"]["sheetId"], 0, 0, setup_values))
     analysis_id = sheets["Analysis"]["sheetId"]
-    requests.append(update_cells_request(analysis_id, 2, 1, [[sprint_name]]))
-    requests.append(update_cells_request(analysis_id, 3, 0, [analysis.SUMMARY_HEADERS]))
-    requests.append(update_cells_request(analysis_id, 4, 0, [[analysis.hours_logged_formula()]]))
-    requests.append(update_cells_request(analysis_id, 4, 1, [analysis.summary_formulas()]))
-    requests.append(update_cells_request(analysis_id, 6, 0, [[analysis.HOW_TO_READ_HEADER]]))
-    requests.append(update_cells_request(analysis_id, 7, 0, [[text] for text in analysis.HOW_TO_READ]))
+    requests.append(update_cells_request(analysis_id, 11, 1, [[sprint_name]]))
+    requests.append(update_cells_request(analysis_id, 12, 0, [analysis.SUMMARY_HEADERS]))
+    requests.append(update_cells_request(analysis_id, 13, 0, [[analysis.hours_logged_formula()]]))
+    requests.append(update_cells_request(analysis_id, 13, 1, [analysis.summary_formulas()]))
+    requests.append(update_cells_request(analysis_id, 15, 0, [[analysis.HOW_TO_READ_HEADER]]))
+    requests.append(update_cells_request(analysis_id, 16, 0, [[text] for text in analysis.HOW_TO_READ]))
     requests.append(update_cells_request(
-        analysis_id, 11, 0, [[f"Hours per story point — {sprint_name} — finished tasks only"]],
+        analysis_id, 20, 0, [[f"Hours per story point — {sprint_name} — finished tasks only"]],
     ))
     for column, header in analysis.EFFORT_HEADERS.items():
-        requests.append(update_cells_request(analysis_id, 12, column, [[header]]))
+        requests.append(update_cells_request(analysis_id, 21, column, [[header]]))
     for column, formulas in analysis.effort_column_formulas().items():
         requests.append(update_cells_request(
-            analysis_id, 13, column, [[formula] for formula in formulas],
+            analysis_id, 22, column, [[formula] for formula in formulas],
         ))
-    requests.append(update_cells_request(sheets["Burndown Data"]["sheetId"], 1, 0, burndown.burndown_formulas()))
+    budget = analysis.budget_table(settings.team_members)
+    requests.append(update_cells_request(
+        analysis_id, 0, 0, [["Sprint time budget", *([""] * 13)], *budget],
+    ))
+    burndown_id = sheets["Burndown Data"]["sheetId"]
+    daily_headers = [["Date", *settings.team_members, "Team total"]]
+    requests.append(update_cells_request(burndown_id, 0, 5, daily_headers))
+    requests.append(update_cells_request(burndown_id, 1, 5, analysis.daily_date_formulas()))
+    requests.append(update_cells_request(
+        burndown_id, 1, 6, analysis.daily_member_formulas(settings.team_members),
+    ))
+    requests.extend(_budget_formatting(analysis_id, metadata, len(settings.team_members)))
+    requests.append({"repeatCell": {
+        "range": {"sheetId": burndown_id, "startRowIndex": 0, "endRowIndex": 1,
+                  "startColumnIndex": 5, "endColumnIndex": 12},
+        "cell": {"userEnteredFormat": {
+            "backgroundColor": {"red": 0.12, "green": 0.25, "blue": 0.38},
+            "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+        }},
+        "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
+    }})
+    chart = _daily_chart(metadata, sheets["Analysis"], sheets["Burndown Data"], settings.team_members)
+    requests.append(chart)
+    requests.append(update_cells_request(
+        sheets["Burndown Data"]["sheetId"], 1, 0, burndown.burndown_formulas(last_row=1000),
+    ))
     requests.extend(_date_formats(sheets, max(2, clear_to + 1)))
     client.apply(requests)
     return {
@@ -123,9 +161,10 @@ def update_workbook(
 
 def _sprint_setup(existing: list[list[Any]], sprint_name: str, start_date: date, end_date: date) -> list[list[Any]]:
     """Update the selector list and store the resolved reporting window."""
-    rows = [list(row[:3]) + [""] * max(0, 3 - len(row)) for row in existing]
-    rows += [[""] * 3 for _ in range(100 - len(rows))]
-    rows[0][0:3] = [rows[0][0] or "Sprint options", "Start date", "End date"]
+    rows = [list(row[:7]) + [""] * max(0, 7 - len(row)) for row in existing]
+    rows += [[""] * 7 for _ in range(100 - len(rows))]
+    rows[0][0:4] = [rows[0][0] or "Sprint options", "Start date", "End date", "Duration (weeks)"]
+    rows[0][5:7] = [rows[0][5] or "Expected hours per week", rows[0][6] or 13]
     found = None
     first_empty = None
     for index in range(1, len(rows)):
@@ -141,6 +180,188 @@ def _sprint_setup(existing: list[list[Any]], sprint_name: str, start_date: date,
     rows[target][1] = sheets_serial(start_date)
     rows[target][2] = sheets_serial(end_date)
     return rows
+
+
+def _budget_formatting(analysis_id: int, metadata: dict[str, Any], member_count: int = 5) -> list[dict[str, Any]]:
+    """Style the two-level budget table and color value/delta text by attainment."""
+    first_person_column = 2
+    total_value_column = first_person_column + member_count * 2
+    last_column = total_value_column + 2
+    requests: list[dict[str, Any]] = [
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 0, "endRowIndex": 9,
+                      "startColumnIndex": 0, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                "textFormat": {"foregroundColor": {"red": .10, "green": .16, "blue": .24},
+                               "fontFamily": "Arial", "fontSize": 10, "bold": False},
+                "verticalAlignment": "MIDDLE",
+                "wrapStrategy": "CLIP",
+            }},
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,"
+                      "userEnteredFormat.verticalAlignment,userEnteredFormat.wrapStrategy",
+        }},
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": .90, "green": .93, "blue": .96},
+                "textFormat": {"foregroundColor": {"red": .10, "green": .16, "blue": .24},
+                               "fontFamily": "Arial", "fontSize": 11, "bold": True},
+                "horizontalAlignment": "CENTER",
+            }},
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,"
+                      "userEnteredFormat.horizontalAlignment",
+        }},
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 1, "endRowIndex": 2,
+                      "startColumnIndex": 0, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": .84, "green": .89, "blue": .94},
+                "textFormat": {"foregroundColor": {"red": .10, "green": .16, "blue": .24},
+                               "fontFamily": "Arial", "fontSize": 10, "bold": True},
+                "horizontalAlignment": "CENTER",
+            }},
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,"
+                      "userEnteredFormat.horizontalAlignment",
+        }},
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 2, "endRowIndex": 3,
+                      "startColumnIndex": 0, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": .93, "green": .95, "blue": .97},
+                "textFormat": {"foregroundColor": {"red": .17, "green": .29, "blue": .40},
+                               "fontFamily": "Arial", "fontSize": 9, "bold": True},
+                "horizontalAlignment": "CENTER",
+            }},
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,userEnteredFormat.horizontalAlignment",
+        }},
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 8, "endRowIndex": 9,
+                      "startColumnIndex": 0, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": .91, "green": .94, "blue": .97},
+                "textFormat": {"bold": True},
+            }},
+            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.bold",
+        }},
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
+                      "startColumnIndex": 1, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0.0"}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }},
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 1, "endRowIndex": 3,
+                      "startColumnIndex": 0, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
+            "fields": "userEnteredFormat.horizontalAlignment",
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": analysis_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 28}, "fields": "pixelSize",
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": analysis_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 3},
+            "properties": {"pixelSize": 24}, "fields": "pixelSize",
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": analysis_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 95}, "fields": "pixelSize",
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": analysis_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
+            "properties": {"pixelSize": 120}, "fields": "pixelSize",
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": analysis_id, "dimension": "COLUMNS", "startIndex": 2, "endIndex": last_column},
+            "properties": {"pixelSize": 88}, "fields": "pixelSize",
+        }},
+        {"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
+                      "startColumnIndex": 1, "endColumnIndex": last_column},
+            "cell": {"userEnteredFormat": {"horizontalAlignment": "RIGHT"}},
+            "fields": "userEnteredFormat.horizontalAlignment",
+        }},
+    ]
+    merge_ranges = [
+        (1, 0, 3, 1), (1, 1, 3, 2),
+        *[(1, first_person_column + i * 2, 2, first_person_column + i * 2 + 2)
+          for i in range(member_count)],
+        (1, total_value_column, 2, total_value_column + 2),
+    ]
+    existing_merges = next((sheet.get("merges", []) for sheet in metadata.get("sheets", [])
+                            if sheet.get("properties", {}).get("sheetId") == analysis_id), [])
+    for start_row, start_col, end_row, end_col in merge_ranges:
+        grid_range = {"sheetId": analysis_id, "startRowIndex": start_row, "endRowIndex": end_row,
+                      "startColumnIndex": start_col, "endColumnIndex": end_col}
+        if not any(all(merge.get(key) == value for key, value in grid_range.items())
+                   for merge in existing_merges):
+            requests.append({"mergeCells": {"range": grid_range, "mergeType": "MERGE_ALL"}})
+    for _, delta_column in [(first_person_column + i * 2, first_person_column + i * 2 + 1)
+                            for i in range(member_count)] + [(total_value_column, total_value_column + 1)]:
+        requests.append({"repeatCell": {
+            "range": {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
+                      "startColumnIndex": delta_column, "endColumnIndex": delta_column + 1},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "+0.0;-0.0;0.0"}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }})
+    rules_to_delete = []
+    for sheet in metadata.get("sheets", []):
+        if sheet.get("properties", {}).get("sheetId") != analysis_id:
+            continue
+        for index, rule in enumerate(sheet.get("conditionalFormats", [])):
+            for affected in rule.get("ranges", []):
+                if affected.get("sheetId") != analysis_id:
+                    continue
+                rows_overlap = affected.get("startRowIndex", 0) < 9 and affected.get("endRowIndex", 0) > 2
+                cols_overlap = affected.get("startColumnIndex", 0) < last_column and affected.get("endColumnIndex", 0) > 2
+                if rows_overlap and cols_overlap:
+                    rules_to_delete.append(index)
+                    break
+    requests.extend({"deleteConditionalFormatRule": {"sheetId": analysis_id, "index": 0}}
+                    for _ in rules_to_delete)
+    rules = []
+    comparisons = [(first_person_column + i * 2, first_person_column + i * 2 + 1)
+                   for i in range(member_count)] + [(total_value_column, total_value_column + 1)]
+    for value_column, delta_column in comparisons:
+        delta = analysis._column_letter(delta_column)
+        for operator, color in [
+            ("<0", {"red": .68, "green": .16, "blue": .16}),
+            (">=0", {"red": .12, "green": .42, "blue": .22}),
+        ]:
+            ranges = [{"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
+                       "startColumnIndex": column, "endColumnIndex": column + 1}
+                      for column in (value_column, delta_column)]
+            rules.append({"addConditionalFormatRule": {"rule": {
+                "ranges": ranges,
+                "booleanRule": {"condition": {"type": "CUSTOM_FORMULA",
+                                                "values": [{"userEnteredValue": f"={delta}{4}{operator}"}]},
+                                "format": {"textFormat": {"foregroundColor": color}}},
+            }, "index": 0}})
+    return [*requests, *rules]
+
+
+def _daily_chart(metadata: dict[str, Any], analysis_sheet: dict[str, Any], data_sheet: dict[str, Any],
+                 team_members: tuple[str, ...]) -> dict[str, Any]:
+    """Update the existing daily-hours chart by title, or create it if missing."""
+    charts = []
+    for sheet in metadata.get("sheets", []):
+        if sheet.get("properties", {}).get("sheetId") == analysis_sheet["sheetId"]:
+            charts = sheet.get("charts", [])
+            break
+    chart = next((item for item in charts if item.get("spec", {}).get("title") in {
+        "Hours logged per day", "Hours logged per day by team member",
+        "Cumulative hours logged by team member", "Cumulative hours by team member",
+    }), None)
+    if chart:
+        return {"updateChartSpec": {"chartId": chart["chartId"],
+                                    "spec": analysis.daily_chart_spec(data_sheet["sheetId"], team_members)}}
+    return {"addChart": {"chart": {
+        "spec": analysis.daily_chart_spec(data_sheet["sheetId"], team_members),
+        "position": {"overlayPosition": {"anchorCell": {"sheetId": analysis_sheet["sheetId"],
+                                                           "rowIndex": 20, "columnIndex": 10}}},
+    }}}
 
 
 def _extend_rows(requests: list[dict[str, Any]], sheet: dict[str, Any], required_rows: int) -> None:

@@ -26,8 +26,11 @@ from src.integrations.automation.core.sheets import authorize
 from src.integrations.automation.sync import analysis, burndown, issue_tables, worklog_table
 from src.integrations.automation.sync.service import sync_sprint
 from src.integrations.automation.sync.workbook import (
+    _budget_formatting,
     _remove_overlapping_banding,
     _resize_table,
+    _daily_chart,
+    _sprint_setup,
     update_workbook,
 )
 from src.shared import config
@@ -411,6 +414,60 @@ class AutomationMCPTests(unittest.TestCase):
         self.assertEqual(set(effort), {0, 1, 2, 7, 8, 9})
         self.assertEqual(len(effort[2]), 6)
         self.assertIn("'Hours by Person'!H2", effort[2][0].expression)
+
+    def test_budget_table_calculates_expected_hours_from_sprint_setup(self):
+        table = analysis.budget_table(("A", "B", "C", "D", "E"))
+        self.assertEqual(table[0], ["Sprint", "Expected (team)", "A", "B", "C", "D", "E", "Total"])
+        self.assertEqual(len(table), 6)
+        expected = table[1][1].expression
+        self.assertIn("'Sprint Setup'!$D$3:$D$100", expected)
+        self.assertIn("'Sprint Setup'!$G$1", expected)
+        self.assertIn("COUNTA($C$2:$G$2)", expected)
+        self.assertIn("Worklogs!$F$2:$F;C$2", table[1][2].expression)
+        self.assertIn("Worklogs!$AG$2:$AG;$A3", table[1][2].expression)
+        self.assertIn("SUM(C3:G3)", table[1][7].expression)
+
+    def test_daily_chart_tracks_each_member_and_team_total(self):
+        date_formula = analysis.daily_date_formulas()[0][0].expression
+        self.assertEqual(date_formula, '=IF(A2="";"";A2)')
+        series = analysis.daily_member_formulas(("A", "B", "C", "D", "E"))
+        self.assertEqual(len(series), 999)
+        self.assertEqual(len(series[0]), 6)
+        self.assertIn("Worklogs!$F$2:$F;G$1", series[0][0].expression)
+        self.assertIn('Worklogs!$D$2:$D;"<"&$F2+1', series[0][0].expression)
+        self.assertNotIn('Worklogs!$D$2:$D;">="&$F2', series[0][0].expression)
+        self.assertIn("SUM(G2:K2)", series[0][-1].expression)
+        spec = analysis.daily_chart_spec(17, ("A", "B", "C", "D", "E"))
+        self.assertEqual(spec["basicChart"]["chartType"], "LINE")
+        self.assertEqual(len(spec["basicChart"]["series"]), 5)
+        existing = {"sheets": [{"properties": {"sheetId": 8}, "charts": [
+            {"chartId": 42, "spec": {"title": "Cumulative hours by team member"}},
+        ]}]}
+        update = _daily_chart(existing, {"sheetId": 8}, {"sheetId": 17}, ("A", "B", "C", "D", "E"))
+        self.assertEqual(update["updateChartSpec"]["chartId"], 42)
+
+    def test_sprint_setup_keeps_duration_and_weekly_rate_inputs(self):
+        existing = [["Sprint options", "Start date", "End date", "Duration (weeks)", "", "Expected hours per week", 13],
+                    ["All sprints"], ["Sprint 0", 46293, 46314, 3], ["Sprint 1", 46314, 46342, 6]]
+        values = _sprint_setup(existing, "Sprint 1", date(2026, 10, 19), date(2026, 11, 16))
+        self.assertEqual(values[2][3], 3)
+        self.assertEqual(values[3][3], 6)
+        self.assertEqual(values[0][6], 13)
+        self.assertEqual(values[0][5], "Expected hours per week")
+
+    def test_budget_formatting_replaces_existing_budget_rules(self):
+        metadata = {"sheets": [{"properties": {"sheetId": 17}, "conditionalFormats": [
+            {"ranges": [{"sheetId": 17, "startRowIndex": 1, "endRowIndex": 7,
+                         "startColumnIndex": 2, "endColumnIndex": 7}]},
+            {"ranges": [{"sheetId": 17, "startRowIndex": 2, "endRowIndex": 6,
+                         "startColumnIndex": 4, "endColumnIndex": 6}]},
+        ]}]}
+        requests = _budget_formatting(17, metadata)
+        self.assertEqual(sum("deleteConditionalFormatRule" in request for request in requests), 2)
+        self.assertEqual(sum("addConditionalFormatRule" in request for request in requests), 4)
+        rules = [request["addConditionalFormatRule"]["rule"] for request in requests
+                 if "addConditionalFormatRule" in request]
+        self.assertTrue(all("backgroundColor" not in rule["booleanRule"]["format"] for rule in rules))
 
     def test_cell_updates_are_bounded_to_the_values_being_written(self):
         request = update_cells_request(17, 4, 2, [["value"]])

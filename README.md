@@ -50,7 +50,7 @@ Jira custom-field IDs belong on each `[[integrations.jira.projects]]` entry, bec
 
 ### Credentials and tool visibility
 
-The `username_env` and `password_env` settings in `config.toml` name the variables to set in `.env`. The example file shows the expected variable names; replace its placeholder values with your credentials. At startup, the server checks Jira and XWiki once, and checks Google Sheets OAuth plus access to the configured workbook when automation is enabled. The XWiki check reads the standard `Main.WebHome` page through the legacy page REST API, which works with the team's XWiki 15.10.16 server. A failed check does not prevent startup. The affected integration is blocked for that server process; run `get_auth_status` to see which check failed and a safe, cause-specific diagnosis. For example, HTTP 401 can mean authentication failed or the account cannot access the checked resource; 403 means access was denied, 404 points to a missing endpoint or resource, and DNS or timeout messages point to connectivity. Do not assume every failure means the credentials are wrong. Fix the reported cause before restarting the MCP client. The server does not retry failed checks automatically.
+The `username_env` and `password_env` settings in `config.toml` name the variables to set in `.env`. The example file shows the expected variable names; replace its placeholder values with your credentials. The MCP server advertises its configured tools immediately and starts the enabled Jira, XWiki, and Google Sheets checks in the background, concurrently and once per process; the Sheets check verifies OAuth and access to the configured workbook. Until an integration check finishes successfully, calls to its tools return a waiting error; after a failure, they return the safe diagnostic and direct the assistant to `get_auth_status`. The XWiki check reads the standard `Main.WebHome` page through the legacy page REST API, which works with the team's XWiki 15.10.16 server. A failed check does not prevent server startup and only blocks that integration. For example, HTTP 401 can mean authentication failed or the account cannot access the checked resource; 403 means access was denied, 404 points to a missing endpoint or resource, and DNS or timeout messages point to connectivity. Do not assume every failure means the credentials are wrong. Fix the reported cause before restarting Codex, Claude, or the MCP client to avoid repeated authentication attempts. The server does not retry failed checks automatically.
 
 ### Configure sprint-sheet automation
 
@@ -71,6 +71,20 @@ Replace the Jira project selector, board ID, spreadsheet URL, roster, and timezo
 Dates are controlled by the caller for each sync. Pass optional `start_date` and `end_date` values in `YYYY-MM-DD` format when Jira's sprint dates do not match the reporting window. If omitted, the tool uses the sprint dates returned by Jira. If Jira does not provide a required date, pass it in the tool call.
 
 #### Google Sheets authorization
+
+To diagnose Python's read access to the macOS Keychain without changing or displaying stored values, run:
+
+```sh
+.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-keychain
+```
+
+The command reports whether Keychain reads work and whether the OAuth client and token entries exist. It does not test writes. Authorization errors distinguish Keychain access, Google OAuth setup, sign-in/token exchange, TLS connection failures, and saving the token; they never include credential values.
+
+To test HTTPS to Google's OAuth endpoint without opening a sign-in flow or sending credentials, run:
+
+```sh
+.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-google-tls
+```
 
 Create a Google Cloud project, enable the Google Sheets API, and create an OAuth client with application type **Desktop app**. Download its JSON, then pass its path to this local authorization command from the MCP-tools checkout:
 
@@ -176,6 +190,8 @@ Every Jira tool is scoped to projects in `config.toml`; read-only projects rejec
 The sync includes project worklogs within the reporting window, even when their issue is outside the selected sprint or subsprints. For a multi-subsprint review, it writes those worklogs under the parent review label so the Analysis selector and charts cover the whole review window. The tool is a write and follows the MCP client's configured write approval behavior.
 
 For a given review, sync either the individual subsprints or one parent roll-up. Do not do both in the same workbook: each selection label is retained in the multi-sprint data, so syncing both would make `All sprints` count the same worklogs and issue scope more than once.
+
+The Analysis sheet starts with a compact per-sprint time budget view. Team expected hours are calculated in the sheet as `Duration (weeks) × Expected hours per week × team size`; edit sprint durations in `Sprint Setup!D3:D` and the per-member weekly rate in `Sprint Setup!G1`. Each member and the team total have separate Value and Delta columns. Sprint deltas are zero until at least one team member logs time for that sprint, so the grand-total delta reflects current progress rather than future sprints. The table includes Sprint 0–4. The daily chart shows each member's cumulative hours from the start of the selected period; it excludes a team-sum series so individual lines remain easy to compare.
 
 ## XWiki tools
 

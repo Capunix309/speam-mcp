@@ -47,7 +47,9 @@ class SheetsClient:
         """Return sheet IDs and grid sizes required for safe updates."""
         fields = (
             "spreadsheetId,sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),"
-            "bandedRanges(bandedRangeId,range)),tables(tableId,name,range)"
+            "merges,bandedRanges(bandedRangeId,range),charts(chartId,spec(title)),"
+            "conditionalFormats(ranges,booleanRule(condition(type,values(userEnteredValue))))),"
+            "tables(tableId,name,range)"
         )
         try:
             return self._service.spreadsheets().get(
