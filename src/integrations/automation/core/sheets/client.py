@@ -72,6 +72,10 @@ class SheetsClient:
             "conditionalFormats(ranges,booleanRule(condition(type,values(userEnteredValue))))),"
             "tables(tableId,name,range)"
         )
+        fallback_fields = (
+            "spreadsheetId,sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),"
+            "charts(chartId,spec(title)))"
+        )
         try:
             return self._service.spreadsheets().get(
                 spreadsheetId=self.spreadsheet_id,
@@ -81,7 +85,7 @@ class SheetsClient:
             try:
                 return self._service.spreadsheets().get(
                     spreadsheetId=self.spreadsheet_id,
-                    fields="spreadsheetId,sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))",
+                    fields=fallback_fields,
                 ).execute()
             except Exception:
                 raise RuntimeError("Could not read Google Sheets workbook metadata.") from detailed_error
