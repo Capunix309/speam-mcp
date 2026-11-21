@@ -141,9 +141,6 @@ def update_workbook(
         }},
         "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
     }})
-    requests.extend(_daily_chart(
-        metadata, sheets["Analysis"], sheets["Burndown Data"], settings.team_members,
-    ))
     requests.append(update_cells_request(
         sheets["Burndown Data"]["sheetId"], 1, 0, burndown.burndown_formulas(last_row=1000),
     ))
@@ -341,39 +338,6 @@ def _budget_formatting(analysis_id: int, metadata: dict[str, Any], member_count:
                                 "format": {"textFormat": {"foregroundColor": color}}},
             }, "index": 0}})
     return [*requests, *rules]
-
-
-def _daily_chart(metadata: dict[str, Any], analysis_sheet: dict[str, Any], data_sheet: dict[str, Any],
-                 team_members: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Update one daily-hours chart, remove duplicates, or create it if missing."""
-    charts = []
-    for sheet in metadata.get("sheets", []):
-        if sheet.get("properties", {}).get("sheetId") == analysis_sheet["sheetId"]:
-            charts = sheet.get("charts", [])
-            break
-    daily_titles = {
-        "Hours logged per day", "Hours logged per day by team member",
-        "Cumulative hours logged by team member", "Cumulative hours by team member",
-    }
-    daily_charts = [item for item in charts if item.get("spec", {}).get("title") in daily_titles]
-    if daily_charts:
-        chart = next((item for item in daily_charts
-                      if item.get("spec", {}).get("title") == "Cumulative hours by team member"),
-                     daily_charts[0])
-        requests = [{"updateChartSpec": {
-            "chartId": chart["chartId"],
-            "spec": analysis.daily_chart_spec(data_sheet["sheetId"], team_members),
-        }}]
-        requests.extend(
-            {"deleteEmbeddedObject": {"objectId": duplicate["chartId"]}}
-            for duplicate in daily_charts if duplicate["chartId"] != chart["chartId"]
-        )
-        return requests
-    return [{"addChart": {"chart": {
-        "spec": analysis.daily_chart_spec(data_sheet["sheetId"], team_members),
-        "position": {"overlayPosition": {"anchorCell": {"sheetId": analysis_sheet["sheetId"],
-                                                           "rowIndex": 20, "columnIndex": 10}}},
-    }}}]
 
 
 def _extend_rows(requests: list[dict[str, Any]], sheet: dict[str, Any], required_rows: int) -> None:

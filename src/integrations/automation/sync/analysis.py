@@ -116,43 +116,6 @@ def daily_member_formulas(team_members: tuple[str, ...], first_row: int = 2,
     return rows
 
 
-def daily_chart_spec(data_sheet_id: int, team_members: tuple[str, ...]) -> dict:
-    """Return a cumulative-hours line chart spec with one series per team member."""
-    colors = [
-        {"red": 0.26, "green": 0.52, "blue": 0.96},
-        {"red": 0.92, "green": 0.26, "blue": 0.21},
-        {"red": 0.20, "green": 0.66, "blue": 0.33},
-        {"red": 0.98, "green": 0.74, "blue": 0.02},
-        {"red": 0.67, "green": 0.33, "blue": 0.82},
-        {"red": 0.10, "green": 0.10, "blue": 0.10},
-    ]
-    series = []
-    for index in range(len(team_members)):
-        series.append({
-            "series": {"sourceRange": {"sources": [{
-                "sheetId": data_sheet_id, "startRowIndex": 0, "endRowIndex": 1000,
-                "startColumnIndex": 6 + index, "endColumnIndex": 7 + index,
-            }]}},
-            "targetAxis": "LEFT_AXIS",
-            "color": colors[index],
-        })
-    return {
-        "title": "Cumulative hours by team member",
-        "basicChart": {
-            "chartType": "LINE",
-            "legendPosition": "BOTTOM_LEGEND",
-            "headerCount": 1,
-            "domains": [{"domain": {"sourceRange": {"sources": [{
-                "sheetId": data_sheet_id, "startRowIndex": 0, "endRowIndex": 1000,
-                "startColumnIndex": 5, "endColumnIndex": 6,
-            }]}}}],
-            "series": series,
-            "axis": [{"position": "BOTTOM_AXIS", "title": "Day"},
-                     {"position": "LEFT_AXIS", "title": "Cumulative hours"}],
-        },
-    }
-
-
 def summary_formulas() -> list[Formula]:
     """Return formulas for the summary cards after the existing Hours Logged cell."""
     selected = 'Analysis!$B$12'
