@@ -20,19 +20,40 @@ class SheetsClient:
 
     def __init__(self, spreadsheet_id: str):
         auth_state.require_available("sheets")
+        self._service = self._build_service()
+        self.spreadsheet_id = spreadsheet_id
+
+    @staticmethod
+    def _build_service():
+        """Build the authenticated Sheets API client after loading OAuth credentials."""
         try:
             from googleapiclient.discovery import build
         except ImportError:
             raise RuntimeError("Install MCP-tools dependencies before using Google Sheets automation.") from None
         credentials = load_credentials()
-        self._service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
-        self.spreadsheet_id = spreadsheet_id
+        return build("sheets", "v4", credentials=credentials, cache_discovery=False)
+
+    @classmethod
+    def check_startup_access(cls, spreadsheet_id: str) -> None:
+        """Check OAuth and workbook access before this integration becomes READY.
+
+        This deliberately bypasses the normal availability guard: startup is the
+        operation that establishes READY. Tool calls still go through __init__
+        and remain blocked while the check is running.
+        """
+        service = cls._build_service()
+        cls._check_access(service, spreadsheet_id)
 
     def check_access(self) -> None:
         """Read minimal workbook metadata once to verify OAuth and file access."""
+        self._check_access(self._service, self.spreadsheet_id)
+
+    @staticmethod
+    def _check_access(service, spreadsheet_id: str) -> None:
+        """Read the minimal workbook metadata and classify safe HTTP failures."""
         try:
-            self._service.spreadsheets().get(
-                spreadsheetId=self.spreadsheet_id,
+            service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
                 fields="spreadsheetId",
             ).execute()
         except Exception as error:

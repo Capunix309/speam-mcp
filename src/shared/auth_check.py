@@ -33,7 +33,7 @@ def check_sheets() -> None:
     from ..integrations.automation.core.sheets.client import SheetsClient
 
     settings = load_settings()
-    SheetsClient(settings.spreadsheet_id).check_access()
+    SheetsClient.check_startup_access(settings.spreadsheet_id)
 
 
 def _enabled_checks():
