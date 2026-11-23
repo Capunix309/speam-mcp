@@ -99,10 +99,10 @@ To test HTTPS to Google's OAuth endpoint without opening a sign-in flow or sendi
 .venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-google-tls
 ```
 
-Create a Google Cloud project, enable the Google Sheets API, and create an OAuth client with application type **Desktop app**. Download its JSON, then pass its path to this local authorization command from the MCP-tools checkout:
+Create a Google Cloud project, enable the Google Sheets API, and create an OAuth client with application type **Desktop app**. Download its JSON, then pass its path to the shared credential command:
 
 ```sh
-.venv/bin/python -m src.integrations.automation.core.sheets.authorize "/path/to/oauth-client.json"
+.venv/bin/python -m src.credentials set sheets "/path/to/oauth-client.json"
 ```
 
 `python -m src.credentials set sheets /path/to/oauth-client.json` opens Google sign-in, stores both the OAuth client settings and refreshable token in the native credential store, then removes the imported JSON file from its original location. After the first import, the path can be omitted when reauthorizing:

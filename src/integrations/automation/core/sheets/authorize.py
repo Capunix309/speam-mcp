@@ -1,4 +1,4 @@
-"""Import a Google OAuth client into Keychain and authorize Sheets access."""
+"""Import a Google OAuth client into the native credential store and authorize Sheets."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def _oauth_transport_error(error: Exception) -> str | None:
 
 
 def _check_keychain(keyring) -> None:
-    """Verify Keychain reads and report only whether expected entries exist."""
+    """Verify credential-store reads and report only whether expected entries exist."""
     try:
         client_config = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_CLIENT_ACCOUNT)
     except Exception as error:
@@ -179,7 +179,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Authorize from a supplied client JSON or the copy already in Keychain."""
+    """Authorize from a supplied client JSON or the copy already in the credential store."""
     args = _parser().parse_args(argv)
     if (args.check_keychain or args.check_google_tls) and args.client_json:
         raise SystemExit("Do not pass a client JSON path with a diagnostic option.")
@@ -190,7 +190,7 @@ def main(argv: list[str] | None = None) -> None:
         try:
             keyring = _keychain()
         except Exception as error:
-            raise SystemExit(_keychain_error("initialize the macOS Keychain backend", error)) from None
+            raise SystemExit(_keychain_error("initialize the native credential-store backend", error)) from None
         _check_keychain(keyring)
     if args.check_keychain or args.check_google_tls:
         return
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         keyring = _keychain()
     except Exception as error:
-        raise SystemExit(_keychain_error("initialize the macOS Keychain backend", error)) from None
+        raise SystemExit(_keychain_error("initialize the native credential-store backend", error)) from None
 
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow

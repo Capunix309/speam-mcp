@@ -22,10 +22,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 def _keychain():
     """Legacy alias retained for callers/tests; only native backends are accepted."""
-    try:
-        return keyring_module()
-    except Exception as error:
-        raise RuntimeError(str(error)) from None
+    return keyring_module()
 
 
 def load_credentials():
