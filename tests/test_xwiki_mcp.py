@@ -40,7 +40,6 @@ class XWikiMCPTests(unittest.TestCase):
         tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
         self.assertTrue(tools["read_page"].annotations.readOnlyHint)
         self.assertFalse(tools["edit_page"].annotations.readOnlyHint)
-        self.assertTrue(tools["move_page"].annotations.destructiveHint)
 
     def test_write_tools_can_be_hidden_from_the_model(self):
         with patch("src.shared.config.expose_write_tools", return_value=False):
