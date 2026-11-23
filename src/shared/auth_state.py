@@ -68,20 +68,20 @@ def safe_failure_diagnostic(error: Exception) -> str:
     if error_type.startswith(("Keyring", "CredentialStore")) or error_type in {"PasswordSetError", "PasswordDeleteError"}:
         status_match = re.search(r"\((-?\d+),", message)
         status_code = int(status_match.group(1)) if status_match else None
-        keychain_diagnostics = {
+        credential_store_diagnostics = {
             -50: (
                 "macOS Keychain rejected the Python keyring request as invalid (errSecParam, OSStatus -50). "
                 "This indicates a local Keychain/backend problem, not a Google credential rejection. "
-                "Run `.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-keychain` "
-                "to diagnose Keychain reads."
+                "Run `.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-credential-store` "
+                "to diagnose native credential-store reads."
             ),
             -128: "macOS denied or canceled the Keychain operation. Check Keychain access for the MCP Python executable.",
             -25293: "macOS could not authorize access to the Keychain (errSecAuthFailed). Check Keychain access for the MCP Python executable.",
-            -25300: "The requested Google Sheets entry is missing from Keychain. Import the OAuth Desktop client and authorize again.",
+            -25300: "The requested Google Sheets entry is missing from the native credential store. Run `python -m src.credentials set sheets` to authorize again.",
             -25308: "macOS did not allow Keychain interaction in this process (errSecInteractionNotAllowed). Check the process context and Keychain access."
         }
-        if status_code is not None and status_code in keychain_diagnostics:
-            return keychain_diagnostics[status_code]
+        if status_code is not None and status_code in credential_store_diagnostics:
+            return credential_store_diagnostics[status_code]
         store_name = {
             "Darwin": "macOS Keychain",
             "Windows": "Windows Credential Manager",
