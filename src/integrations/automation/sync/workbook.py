@@ -33,9 +33,14 @@ def update_workbook(
     worklog_range = "A1:AI2000" if worklog_columns >= 35 else "A1:AG2000"
     existing_worklogs = client.values("Worklogs", worklog_range)
     task_rows = client.values("Task Analysis", "A1:M1000")
+    task_formulas = client.values("Task Analysis", "A1:M1000", "FORMULA")
     person_rows = client.values("Person Task Effort", "A1:J2000")
+    person_formulas = client.values("Person Task Effort", "A1:J2000", "FORMULA")
     setup_rows = client.values("Sprint Setup", "A1:G100")
-    analysis_rows = client.values("Analysis", "A1:N12")
+    setup_formulas = client.values("Sprint Setup", "A1:G100", "FORMULA")
+    analysis_rows = client.values("Analysis", "A1:N28")
+    analysis_formulas = client.values("Analysis", "A1:N28", "FORMULA")
+    burndown_formulas = client.values("Burndown Data", "A1:L1000", "FORMULA")
     if not existing_worklogs or not task_rows or not person_rows or not setup_rows:
         raise ValueError("One or more workbook tables are missing their header row.")
 
@@ -57,6 +62,8 @@ def update_workbook(
                       "startIndex": 8, "endIndex": 9},
             "inheritFromBefore": False,
         }})
+        analysis_rows.insert(8, [])
+        analysis_formulas.insert(8, [])
     last_task_row = issue_tables._next_empty_row(task_rows, 0) - 1
     last_person_row = issue_tables._next_empty_row(person_rows, 0) - 1
     new_task_rows = [index for index, _ in task_updates if index > last_task_row]
@@ -85,12 +92,37 @@ def update_workbook(
     if worklog_columns < 35:
         requests.append(update_cells_request(sheets["Worklogs"]["sheetId"], 0, 33, [worklog_values[0][33:35]]))
 
+    new_task_row_set = set(new_task_rows)
     for row_index, row in task_updates:
         _extend_rows(requests, sheets["Task Analysis"], row_index + 1)
-        requests.append(update_cells_request(sheets["Task Analysis"]["sheetId"], row_index, 0, [row]))
+        if row_index in new_task_row_set:
+            requests.append(update_cells_request(sheets["Task Analysis"]["sheetId"], row_index, 0, [row]))
+        else:
+            requests.extend(_missing_formula_requests(
+                sheets["Task Analysis"]["sheetId"], row_index, 0, [row],
+                [_row_or_empty(task_formulas, row_index, 13)],
+            ))
+    _append_row_slices(
+        requests, sheets["Task Analysis"]["sheetId"],
+        [(index, row) for index, row in task_updates if index not in new_task_row_set],
+        [(0, 5), (8, 10)],
+    )
+
+    new_person_row_set = set(new_person_rows)
     for row_index, row in person_updates:
         _extend_rows(requests, sheets["Person Task Effort"], row_index + 1)
-        requests.append(update_cells_request(sheets["Person Task Effort"]["sheetId"], row_index, 0, [row]))
+        if row_index in new_person_row_set:
+            requests.append(update_cells_request(sheets["Person Task Effort"]["sheetId"], row_index, 0, [row]))
+        else:
+            requests.extend(_missing_formula_requests(
+                sheets["Person Task Effort"]["sheetId"], row_index, 0, [row],
+                [_row_or_empty(person_formulas, row_index, 10)],
+            ))
+    _append_row_slices(
+        requests, sheets["Person Task Effort"]["sheetId"],
+        [(index, row) for index, row in person_updates if index not in new_person_row_set],
+        [(0, 3), (9, 10)],
+    )
 
     if new_task_rows and last_task_row >= 1:
         requests.append(_copy_format(
@@ -103,33 +135,51 @@ def update_workbook(
             max(new_person_rows) + 1, 10,
         ))
 
-    requests.append(update_cells_request(sheets["Sprint Setup"]["sheetId"], 0, 0, setup_values))
+    requests.extend(_changed_literal_requests(
+        sheets["Sprint Setup"]["sheetId"], 0, 0, setup_values, setup_rows, setup_formulas,
+    ))
     analysis_id = sheets["Analysis"]["sheetId"]
-    requests.append(update_cells_request(analysis_id, 11, 1, [[sprint_name]]))
-    requests.append(update_cells_request(analysis_id, 12, 0, [analysis.SUMMARY_HEADERS]))
-    requests.append(update_cells_request(analysis_id, 13, 0, [[analysis.hours_logged_formula()]]))
-    requests.append(update_cells_request(analysis_id, 13, 1, [analysis.summary_formulas()]))
-    requests.append(update_cells_request(analysis_id, 15, 0, [[analysis.HOW_TO_READ_HEADER]]))
-    requests.append(update_cells_request(analysis_id, 16, 0, [[text] for text in analysis.HOW_TO_READ]))
-    requests.append(update_cells_request(
+    requests.extend(_changed_literal_requests(
+        analysis_id, 11, 1, [[sprint_name]], analysis_rows, analysis_formulas,
+    ))
+    requests.extend(_changed_literal_requests(
+        analysis_id, 12, 0, [analysis.SUMMARY_HEADERS], analysis_rows, analysis_formulas,
+    ))
+    summary_formulas = [[analysis.hours_logged_formula(), *analysis.summary_formulas()]]
+    requests.extend(_missing_formula_requests(
+        analysis_id, 13, 0, summary_formulas, analysis_formulas[13:14],
+    ))
+    requests.extend(_changed_literal_requests(
+        analysis_id, 15, 0, [[analysis.HOW_TO_READ_HEADER]], analysis_rows, analysis_formulas,
+    ))
+    requests.extend(_changed_literal_requests(
+        analysis_id, 16, 0, [[text] for text in analysis.HOW_TO_READ], analysis_rows, analysis_formulas,
+    ))
+    requests.extend(_changed_literal_requests(
         analysis_id, 20, 0, [[f"Hours per story point — {sprint_name} — finished tasks only"]],
+        analysis_rows, analysis_formulas,
     ))
     for column, header in analysis.EFFORT_HEADERS.items():
-        requests.append(update_cells_request(analysis_id, 21, column, [[header]]))
+        requests.extend(_changed_literal_requests(
+            analysis_id, 21, column, [[header]], analysis_rows, analysis_formulas,
+        ))
     for column, formulas in analysis.effort_column_formulas().items():
-        requests.append(update_cells_request(
+        requests.extend(_missing_formula_requests(
             analysis_id, 22, column, [[formula] for formula in formulas],
+            [[_cell(analysis_formulas, row, column)] for row in range(22, 28)],
         ))
     budget = analysis.budget_table(settings.team_members)
-    requests.append(update_cells_request(
-        analysis_id, 0, 0, [["Sprint time budget", *([""] * 13)], *budget],
+    budget_values = [["Sprint time budget", *([""] * 13)], *budget]
+    requests.extend(_changed_literal_requests(
+        analysis_id, 0, 0, budget_values, analysis_rows, analysis_formulas,
+    ))
+    requests.extend(_missing_formula_requests(
+        analysis_id, 0, 0, budget_values, analysis_formulas[:9],
     ))
     burndown_id = sheets["Burndown Data"]["sheetId"]
     daily_headers = [["Date", *settings.team_members, "Team total"]]
-    requests.append(update_cells_request(burndown_id, 0, 5, daily_headers))
-    requests.append(update_cells_request(burndown_id, 1, 5, analysis.daily_date_formulas()))
-    requests.append(update_cells_request(
-        burndown_id, 1, 6, analysis.daily_member_formulas(settings.team_members),
+    requests.extend(_changed_literal_requests(
+        burndown_id, 0, 5, daily_headers, burndown_formulas, burndown_formulas,
     ))
     requests.extend(_budget_formatting(analysis_id, metadata, len(settings.team_members)))
     requests.append({"repeatCell": {
@@ -141,8 +191,15 @@ def update_workbook(
         }},
         "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
     }})
-    requests.append(update_cells_request(
-        sheets["Burndown Data"]["sheetId"], 1, 0, burndown.burndown_formulas(last_row=1000),
+    burn_formulas = burndown.burndown_formulas(last_row=1000)
+    date_formulas = analysis.daily_date_formulas(last_row=1000)
+    member_formulas = analysis.daily_member_formulas(settings.team_members, last_row=1000)
+    daily_formulas = [
+        [*burn_formulas[row], *date_formulas[row], *member_formulas[row]]
+        for row in range(len(burn_formulas))
+    ]
+    requests.extend(_missing_formula_requests(
+        burndown_id, 1, 0, daily_formulas, burndown_formulas[1:],
     ))
     requests.extend(_date_formats(sheets, max(2, clear_to + 1)))
     client.apply(requests)
@@ -155,6 +212,135 @@ def update_workbook(
         "worklog_hours": round(sum(float(item["hours"]) for item in worklogs), 2),
         "analysis_selection": sprint_name,
     }
+
+
+def _row_or_empty(rows: list[list[Any]], row_index: int, width: int) -> list[Any]:
+    """Return a padded row from a values.get result."""
+    if row_index >= len(rows):
+        return [""] * width
+    row = list(rows[row_index][:width])
+    row.extend([""] * (width - len(row)))
+    return row
+
+
+def _cell(rows: list[list[Any]], row_index: int, column_index: int) -> Any:
+    """Read one possibly absent cell from a ragged values.get result."""
+    if row_index >= len(rows) or column_index >= len(rows[row_index]):
+        return ""
+    return rows[row_index][column_index]
+
+
+def _is_formula(value: Any) -> bool:
+    """Identify formula strings returned by Sheets with valueRenderOption=FORMULA."""
+    return isinstance(value, str) and value.startswith("=")
+
+
+def _missing_formula_requests(
+    sheet_id: int,
+    start_row: int,
+    start_column: int,
+    desired_rows: list[list[Any]],
+    existing_formula_rows: list[list[Any]],
+) -> list[dict[str, Any]]:
+    """Write only formula cells that are currently blank, coalescing rectangular runs."""
+    row_spans: dict[tuple[int, int], list[tuple[int, list[Any]]]] = {}
+    for row_offset, desired in enumerate(desired_rows):
+        existing = existing_formula_rows[row_offset] if row_offset < len(existing_formula_rows) else []
+        column = 0
+        while column < len(desired):
+            current = existing[column] if column < len(existing) else ""
+            missing = isinstance(desired[column], Formula) and current != desired[column].expression
+            if not missing:
+                column += 1
+                continue
+            first = column
+            cells = []
+            while column < len(desired):
+                current = existing[column] if column < len(existing) else ""
+                if not isinstance(desired[column], Formula) or current == desired[column].expression:
+                    break
+                cells.append(desired[column])
+                column += 1
+            row_spans.setdefault((first, column), []).append((row_offset, cells))
+
+    requests: list[dict[str, Any]] = []
+    for (first_column, _), rows in row_spans.items():
+        rows.sort(key=lambda item: item[0])
+        run: list[list[Any]] = []
+        run_start = previous = -1
+        for row_offset, cells in rows:
+            if run and row_offset != previous + 1:
+                requests.append(update_cells_request(
+                    sheet_id, start_row + run_start, start_column + first_column, run,
+                ))
+                run = []
+            if not run:
+                run_start = row_offset
+            run.append(cells)
+            previous = row_offset
+        if run:
+            requests.append(update_cells_request(
+                sheet_id, start_row + run_start, start_column + first_column, run,
+            ))
+    return requests
+
+
+def _changed_literal_requests(
+    sheet_id: int,
+    start_row: int,
+    start_column: int,
+    desired_rows: list[list[Any]],
+    existing_values: list[list[Any]],
+    existing_formulas: list[list[Any]],
+) -> list[dict[str, Any]]:
+    """Write changed literal cells only; never replace an existing formula with its result."""
+    requests: list[dict[str, Any]] = []
+    for row_offset, desired in enumerate(desired_rows):
+        changed: list[tuple[int, Any]] = []
+        for column_offset, value in enumerate(desired):
+            if isinstance(value, Formula) or _is_formula(
+                _cell(existing_formulas, start_row + row_offset, start_column + column_offset)
+            ):
+                continue
+            current = _cell(existing_values, start_row + row_offset, start_column + column_offset)
+            if current != value and not (current in (None, "") and value in (None, "")):
+                changed.append((column_offset, value))
+        index = 0
+        while index < len(changed):
+            first_offset, first_value = changed[index]
+            cells = [first_value]
+            previous = first_offset
+            index += 1
+            while index < len(changed) and changed[index][0] == previous + 1:
+                previous, value = changed[index]
+                cells.append(value)
+                index += 1
+            requests.append(update_cells_request(
+                sheet_id, start_row + row_offset, start_column + first_offset, [cells],
+            ))
+    return requests
+
+
+def _append_row_slices(
+    requests: list[dict[str, Any]],
+    sheet_id: int,
+    updates: list[tuple[int, list[Any]]],
+    column_ranges: list[tuple[int, int]],
+) -> None:
+    """Write only data columns for contiguous existing rows, preserving formula columns."""
+    if not updates:
+        return
+    updates = sorted(updates, key=lambda item: item[0])
+    runs: list[list[tuple[int, list[Any]]]] = []
+    for update in updates:
+        if not runs or update[0] != runs[-1][-1][0] + 1:
+            runs.append([update])
+        else:
+            runs[-1].append(update)
+    for run in runs:
+        for start_column, end_column in column_ranges:
+            rows = [row[start_column:end_column] for _, row in run]
+            requests.append(update_cells_request(sheet_id, run[0][0], start_column, rows))
 
 
 def _sprint_setup(existing: list[list[Any]], sprint_name: str, start_date: date, end_date: date) -> list[list[Any]]:
@@ -304,40 +490,7 @@ def _budget_formatting(analysis_id: int, metadata: dict[str, Any], member_count:
             "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "+0.0;-0.0;0.0"}}},
             "fields": "userEnteredFormat.numberFormat",
         }})
-    rules_to_delete = []
-    for sheet in metadata.get("sheets", []):
-        if sheet.get("properties", {}).get("sheetId") != analysis_id:
-            continue
-        for index, rule in enumerate(sheet.get("conditionalFormats", [])):
-            for affected in rule.get("ranges", []):
-                if affected.get("sheetId") != analysis_id:
-                    continue
-                rows_overlap = affected.get("startRowIndex", 0) < 9 and affected.get("endRowIndex", 0) > 2
-                cols_overlap = affected.get("startColumnIndex", 0) < last_column and affected.get("endColumnIndex", 0) > 2
-                if rows_overlap and cols_overlap:
-                    rules_to_delete.append(index)
-                    break
-    requests.extend({"deleteConditionalFormatRule": {"sheetId": analysis_id, "index": 0}}
-                    for _ in rules_to_delete)
-    rules = []
-    comparisons = [(first_person_column + i * 2, first_person_column + i * 2 + 1)
-                   for i in range(member_count)] + [(total_value_column, total_value_column + 1)]
-    for value_column, delta_column in comparisons:
-        delta = analysis._column_letter(delta_column)
-        for operator, color in [
-            ("<0", {"red": .68, "green": .16, "blue": .16}),
-            (">=0", {"red": .12, "green": .42, "blue": .22}),
-        ]:
-            ranges = [{"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
-                       "startColumnIndex": column, "endColumnIndex": column + 1}
-                      for column in (value_column, delta_column)]
-            rules.append({"addConditionalFormatRule": {"rule": {
-                "ranges": ranges,
-                "booleanRule": {"condition": {"type": "CUSTOM_FORMULA",
-                                                "values": [{"userEnteredValue": f"={delta}{4}{operator}"}]},
-                                "format": {"textFormat": {"foregroundColor": color}}},
-            }, "index": 0}})
-    return [*requests, *rules]
+    return requests
 
 
 def _extend_rows(requests: list[dict[str, Any]], sheet: dict[str, Any], required_rows: int) -> None:

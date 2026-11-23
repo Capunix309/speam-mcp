@@ -68,8 +68,7 @@ class SheetsClient:
         """Return sheet IDs and grid sizes required for safe updates."""
         fields = (
             "spreadsheetId,sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),"
-            "merges,bandedRanges(bandedRangeId,range),"
-            "conditionalFormats(ranges,booleanRule(condition(type,values(userEnteredValue))))),"
+            "merges,bandedRanges(bandedRangeId,range)),"
             "tables(tableId,name,range)"
         )
         try:
@@ -86,13 +85,14 @@ class SheetsClient:
             except Exception:
                 raise RuntimeError("Could not read Google Sheets workbook metadata.") from detailed_error
 
-    def values(self, sheet_title: str, a1_range: str) -> list[list[Any]]:
-        """Fetch a bounded range using unformatted values for stable matching."""
+    def values(self, sheet_title: str, a1_range: str,
+               value_render_option: str = "UNFORMATTED_VALUE") -> list[list[Any]]:
+        """Fetch bounded values, optionally returning formulas instead of results."""
         try:
             result = self._service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
                 range=f"'{sheet_title}'!{a1_range}",
-                valueRenderOption="UNFORMATTED_VALUE",
+                valueRenderOption=value_render_option,
             ).execute()
             return result.get("values", [])
         except Exception:
