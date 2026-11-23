@@ -18,9 +18,10 @@ def register(server) -> None:
 
         Do not assume every AUTH_FAILURE means invalid credentials. Use the check
         and diagnostic to distinguish rejected authentication, denied access,
-        missing resources, configuration errors, and connectivity failures. The
-        failed integration remains blocked until the underlying cause is fixed
-        and the server starts again.
+        missing resources, configuration errors, and connectivity failures.
+        While a check is in progress, wait before retrying that integration's
+        tools. If a check fails, report its diagnostic to the user and recommend
+        fixing the cause before restarting Codex, Claude, or the MCP client.
         """
         return json.dumps({
             "integrations": {
@@ -32,9 +33,11 @@ def register(server) -> None:
                 for name, value in auth_state.all_statuses().items()
             },
             "assistant_instruction": (
-                "Report the failed check and its diagnostic. Do not assume credentials are wrong: "
-                "follow the reported cause and recommend correcting that setting, access, endpoint, "
-                "or network issue as appropriate. The failed integration remains blocked until the "
-                "cause is fixed and the MCP server starts again."
+                "For CHECKING integrations, tell the user the check is still running and wait before "
+                "calling those tools again. For AUTH_FAILURE, report the diagnostic and do not assume "
+                "credentials are wrong: follow the reported cause and recommend correcting that setting, "
+                "access, endpoint, or network issue as appropriate. The failed integration remains blocked "
+                "until the cause is fixed and the MCP server starts again. Do not restart Codex, Claude, "
+                "or the MCP client before the user fixes the cause, to avoid repeated authentication attempts."
             ),
         }, ensure_ascii=False, indent=2)

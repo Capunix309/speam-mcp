@@ -2,21 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from . import auth_state, config
-
-
-def _record_check(name: str, check, description: str) -> None:
-    try:
-        check()
-    except Exception as error:
-        auth_state.set_status(
-            name,
-            "AUTH_FAILURE",
-            auth_state.safe_failure_diagnostic(error),
-            description,
-        )
-    else:
-        auth_state.set_status(name, "READY", "Startup check succeeded.", description)
 
 
 def check_xwiki() -> None:
@@ -45,25 +33,74 @@ def check_sheets() -> None:
     from ..integrations.automation.core.sheets.client import SheetsClient
 
     settings = load_settings()
-    SheetsClient(settings.spreadsheet_id).check_access()
+    SheetsClient.check_startup_access(settings.spreadsheet_id)
 
 
-def check_enabled_integrations() -> None:
-    """Check enabled services once, retaining failures without stopping startup."""
-    auth_state.reset()
+def _enabled_checks():
+    checks = {}
     if config.integration("jira").enabled:
-        _record_check("jira", check_jira, "GET Jira current-user REST endpoint")
-    else:
-        auth_state.set_status("jira", "DISABLED", "Integration is disabled.")
+        checks["jira"] = (check_jira, "GET Jira current-user REST endpoint")
     if config.integration("xwiki").enabled:
-        _record_check(
-            "xwiki",
+        checks["xwiki"] = (
             check_xwiki,
             "GET Main.WebHome through the legacy page REST API in the default wiki",
         )
-    else:
-        auth_state.set_status("xwiki", "DISABLED", "Integration is disabled.")
     if config.automation_settings().get("enabled", False):
-        _record_check("sheets", check_sheets, "Read metadata for the configured Google spreadsheet")
-    else:
-        auth_state.set_status("sheets", "DISABLED", "Google Sheets automation is disabled.")
+        checks["sheets"] = (
+            check_sheets,
+            "Read metadata for the configured Google spreadsheet",
+        )
+    return checks
+
+
+def prepare_enabled_integrations() -> None:
+    """Mark enabled integrations as checking before the MCP handshake."""
+    auth_state.reset()
+    checks = _enabled_checks()
+    descriptions = {
+        "jira": "GET Jira current-user REST endpoint",
+        "xwiki": "GET Main.WebHome through the legacy page REST API in the default wiki",
+        "sheets": "Read metadata for the configured Google spreadsheet",
+    }
+    for name in ("jira", "xwiki", "sheets"):
+        if name in checks:
+            auth_state.set_status(name, "CHECKING", "Startup authentication check is in progress.", descriptions[name])
+        elif name == "sheets":
+            auth_state.set_status(name, "DISABLED", "Google Sheets automation is disabled.")
+        else:
+            auth_state.set_status(name, "DISABLED", "Integration is disabled.")
+
+
+def run_enabled_integration_checks() -> None:
+    """Run each configured startup check concurrently and record its result."""
+    checks = _enabled_checks()
+
+    if not checks:
+        return
+
+    # These checks are independent network calls. Running them concurrently keeps
+    # startup bounded by the slowest integration instead of their combined latency.
+    with ThreadPoolExecutor(max_workers=len(checks), thread_name_prefix="mcp-auth") as executor:
+        futures = {
+            executor.submit(check): (name, description)
+            for name, (check, description) in checks.items()
+        }
+        for future in as_completed(futures):
+            name, description = futures[future]
+            try:
+                future.result()
+            except Exception as error:
+                auth_state.set_status(
+                    name,
+                    "AUTH_FAILURE",
+                    auth_state.safe_failure_diagnostic(error),
+                    description,
+                )
+            else:
+                auth_state.set_status(name, "READY", "Startup check succeeded.", description)
+
+
+def check_enabled_integrations() -> None:
+    """Prepare and run startup checks synchronously (useful for direct callers)."""
+    prepare_enabled_integrations()
+    run_enabled_integration_checks()

@@ -42,13 +42,19 @@ def all_statuses() -> dict[str, AuthStatus]:
 
 
 def require_available(integration: str) -> None:
-    """Prevent calls to an integration whose startup authentication failed."""
+    """Prevent calls until the startup check succeeds, or after it fails."""
     result = status(integration)
+    if result.state in {"CHECKING", "UNKNOWN"}:
+        raise RuntimeError(
+            f"{integration} is not ready yet because its startup authentication check is still in progress. "
+            "Use get_auth_status to see its current state, wait briefly, then call the tool again."
+        )
     if result.state == "AUTH_FAILURE":
         check = result.check or "the integration's configured startup check"
         raise RuntimeError(
             f"{integration} is unavailable because {check} failed. {result.diagnostic} "
-            "Fix the reported cause before restarting the MCP server; the check runs at startup."
+            "Call get_auth_status for the diagnosis. Fix the reported cause before restarting the MCP server; "
+            "do not restart Codex, Claude, or the MCP client before fixing it, because checks run at startup."
         )
 
 
@@ -56,6 +62,27 @@ def safe_failure_diagnostic(error: Exception) -> str:
     """Classify a failed check without exposing response bodies or credentials."""
     message = str(error)
     lowered = message.lower()
+    error_type = type(error).__name__
+
+    if error_type.startswith("Keyring") or error_type in {"PasswordSetError", "PasswordDeleteError"}:
+        status_match = re.search(r"\((-?\d+),", message)
+        status_code = int(status_match.group(1)) if status_match else None
+        keychain_diagnostics = {
+            -50: (
+                "macOS Keychain rejected the Python keyring request as invalid (errSecParam, OSStatus -50). "
+                "This indicates a local Keychain/backend problem, not a Google credential rejection. "
+                "Run `.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-keychain` "
+                "to diagnose Keychain reads."
+            ),
+            -128: "macOS denied or canceled the Keychain operation. Check Keychain access for the MCP Python executable.",
+            -25293: "macOS could not authorize access to the Keychain (errSecAuthFailed). Check Keychain access for the MCP Python executable.",
+            -25300: "The requested Google Sheets entry is missing from Keychain. Import the OAuth Desktop client and authorize again.",
+            -25308: "macOS did not allow Keychain interaction in this process (errSecInteractionNotAllowed). Check the process context and Keychain access."
+        }
+        return keychain_diagnostics.get(
+            status_code,
+            "The Python keyring backend could not access macOS Keychain. Check the backend and Keychain access for the MCP Python executable.",
+        )
 
     if "credentials are not configured" in lowered:
         return "Credentials are missing from the MCP configuration or environment. Check the configured variable names and that both values are available to the server."
@@ -105,5 +132,4 @@ def safe_failure_diagnostic(error: Exception) -> str:
             return "The TLS connection could not be verified. Check the configured HTTPS endpoint and certificate trust."
         return "The MCP could not reach the service. Check the configured base URL, network access, and service availability."
 
-    error_type = type(error).__name__
     return f"The startup check failed with {error_type}; its details were withheld. Check the integration configuration and server logs."

@@ -104,7 +104,7 @@ def issue_formulas(row_number: int) -> dict[int, str]:
             f'Worklogs!$AG$2:$AG;J{r})=0;"";MAXIFS(Worklogs!$D$2:$D;'
             f'Worklogs!$A$2:$A;A{r};Worklogs!$AG$2:$AG;J{r})))'
         ),
-        10: f'=IF(OR($A{r}="";$J{r}="");"";IF(OR(Analysis!$B$3="All sprints";$J{r}=Analysis!$B$3);$A{r};""))',
+        10: f'=IF(OR($A{r}="";$J{r}="");"";IF(OR(Analysis!$B$12="All sprints";$J{r}=Analysis!$B$12);$A{r};""))',
         11: f'=IF(K{r}="";"";E{r})',
         12: f'=IF(K{r}="";"";F{r})',
     }
