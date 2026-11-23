@@ -14,7 +14,13 @@ def check_xwiki() -> None:
 
     settings = xwiki_config.current()
     if not settings.username or not settings.password:
-        raise RuntimeError("XWiki credentials are not configured.")
+        store_error = getattr(settings, "credential_store_error", None)
+        if store_error:
+            raise RuntimeError(store_error)
+        raise RuntimeError(
+            "XWiki credentials are missing. Save them with `python -m src.credentials set xwiki` "
+            "or provide the configured environment variables."
+        )
     # The /users REST resource was added in XWiki 18.2. Use the standard home
     # page rather than XWikiPreferences, which may be restricted to administrators.
     request("GET", page_url("Main", "WebHome"), _skip_auth_check=True)

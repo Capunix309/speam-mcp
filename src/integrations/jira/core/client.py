@@ -15,11 +15,12 @@ from src.shared import auth_state
 
 def _settings():
     settings = config.integration("jira")
-    if not settings.username_env or not settings.password_env:
-        raise ValueError("Configure Jira username_env and password_env in config.toml.")
     if not settings.username or not settings.password:
-        raise ValueError(
-            f"Set {settings.username_env} and {settings.password_env} in {config.ENV_PATH}."
+        if settings.credential_store_error:
+            raise RuntimeError(settings.credential_store_error)
+        raise RuntimeError(
+            "Jira credentials are missing. Save them with `python -m src.credentials set jira` "
+            "or provide the configured environment variables."
         )
     return settings
 

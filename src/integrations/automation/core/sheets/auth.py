@@ -1,31 +1,31 @@
-"""Load and refresh Google OAuth credentials stored in macOS Keychain."""
+"""Load and refresh Google OAuth credentials from the native credential store."""
 
 from __future__ import annotations
 
 import json
-import platform
+from src.shared.credential_store import (
+    SHEETS_CREDENTIAL_SERVICE,
+    SHEETS_TOKEN_ACCOUNT,
+    SHEETS_CLIENT_ACCOUNT,
+    keyring_module,
+)
 
 
-KEYCHAIN_SERVICE = "mcp-tools.google-sheets"
-KEYCHAIN_ACCOUNT = "automation"
-KEYCHAIN_CLIENT_ACCOUNT = "oauth-client"
+# Retain these aliases for existing imports and stored entry compatibility.
+KEYCHAIN_SERVICE = SHEETS_CREDENTIAL_SERVICE
+KEYCHAIN_ACCOUNT = SHEETS_TOKEN_ACCOUNT
+KEYCHAIN_CLIENT_ACCOUNT = SHEETS_CLIENT_ACCOUNT
 
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
 def _keychain():
-    """Return the native macOS Keychain backend, refusing file-based fallbacks."""
-    if platform.system() != "Darwin":
-        raise RuntimeError("Google Sheets authorization requires macOS Keychain on this setup.")
+    """Legacy alias retained for callers/tests; only native backends are accepted."""
     try:
-        import keyring
-    except ImportError:
-        raise RuntimeError("Install MCP-tools dependencies before using Google Sheets automation.") from None
-    backend = keyring.get_keyring()
-    if not backend.__class__.__module__.startswith("keyring.backends.macOS"):
-        raise RuntimeError("Python keyring is not using the macOS Keychain backend.")
-    return keyring
+        return keyring_module()
+    except Exception as error:
+        raise RuntimeError(str(error)) from None
 
 
 def load_credentials():
@@ -41,7 +41,7 @@ def load_credentials():
     if not token:
         raise RuntimeError(
             f"Google Sheets has not been authorized yet. Run "
-            "python -m src.integrations.automation.core.sheets.authorize."
+            "python -m src.credentials set sheets."
         )
     try:
         credentials = Credentials.from_authorized_user_info(json.loads(token), SCOPES)
@@ -55,5 +55,5 @@ def load_credentials():
         raise
     except Exception:
         raise RuntimeError(
-            "Could not load Google Sheets authorization; rerun the local authorization command."
+            "Could not load Google Sheets authorization; rerun `python -m src.credentials set sheets`."
         ) from None

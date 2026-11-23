@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import platform
 from dataclasses import dataclass
 
 
@@ -64,7 +65,7 @@ def safe_failure_diagnostic(error: Exception) -> str:
     lowered = message.lower()
     error_type = type(error).__name__
 
-    if error_type.startswith("Keyring") or error_type in {"PasswordSetError", "PasswordDeleteError"}:
+    if error_type.startswith(("Keyring", "CredentialStore")) or error_type in {"PasswordSetError", "PasswordDeleteError"}:
         status_match = re.search(r"\((-?\d+),", message)
         status_code = int(status_match.group(1)) if status_match else None
         keychain_diagnostics = {
@@ -79,9 +80,16 @@ def safe_failure_diagnostic(error: Exception) -> str:
             -25300: "The requested Google Sheets entry is missing from Keychain. Import the OAuth Desktop client and authorize again.",
             -25308: "macOS did not allow Keychain interaction in this process (errSecInteractionNotAllowed). Check the process context and Keychain access."
         }
-        return keychain_diagnostics.get(
-            status_code,
-            "The Python keyring backend could not access macOS Keychain. Check the backend and Keychain access for the MCP Python executable.",
+        if status_code is not None and status_code in keychain_diagnostics:
+            return keychain_diagnostics[status_code]
+        store_name = {
+            "Darwin": "macOS Keychain",
+            "Windows": "Windows Credential Manager",
+            "Linux": "Linux Secret Service or KWallet",
+        }.get(platform.system(), "native credential store")
+        return (
+            f"The Python keyring backend could not access {store_name}. Check that a native credential-store "
+            "backend is installed, unlocked, and accessible to the MCP process."
         )
 
     if "credentials are not configured" in lowered:
