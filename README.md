@@ -4,14 +4,14 @@ One stdio MCP server exposes the enabled XWiki and Jira integrations. Production
 
 ## 1. Configure the integrations
 
-These settings belong to the **MCP-tools checkout**, not to the project that will use the MCP. From the `MCP-tools/` folder, copy the example files:
+These settings belong to the current operating-system user, not to the project that uses the MCP or to Codex/Claude configuration. From the `MCP-tools/` folder, install dependencies and initialize the per-user configuration:
 
 ```sh
-cp config.example.toml config.toml
-cp .env.example .env
+pip install -r requirements.txt
+python -m src.setup
 ```
 
-`config.toml` is ignored by Git. It contains the server host, enabled integrations, wiki and project access, and the names of environment variables used for credentials. `.env` contains the corresponding secret values and is also ignored by Git. Never put credentials in a project's Codex or Claude MCP registration file.
+The command creates `config.toml` in the platform's standard per-user application config directory (Windows: `%APPDATA%\\Capunix\\mcp-tools`, macOS: `~/Library/Application Support/mcp-tools`, Linux: `$XDG_CONFIG_HOME/mcp-tools`, usually `~/.config/mcp-tools`). If it finds an old checkout-local `config.toml`, it moves it there once without overwriting an existing user config. The file contains the server host, enabled integrations, wiki and project access, and environment-variable names only. Never put credentials in Codex or Claude's MCP registration file.
 
 ### Add or configure XWiki wikis
 
@@ -50,7 +50,20 @@ Jira custom-field IDs belong on each `[[integrations.jira.projects]]` entry, bec
 
 ### Credentials and tool visibility
 
-The `username_env` and `password_env` settings in `config.toml` name the variables to set in `.env`. The example file shows the expected variable names; replace its placeholder values with your credentials. The MCP server advertises its configured tools immediately and starts the enabled Jira, XWiki, and Google Sheets checks in the background, concurrently and once per process; the Sheets check verifies OAuth and access to the configured workbook. Until an integration check finishes successfully, calls to its tools return a waiting error; after a failure, they return the safe diagnostic and direct the assistant to `get_auth_status`. The XWiki check reads the standard `Main.WebHome` page through the legacy page REST API, which works with the team's XWiki 15.10.16 server. A failed check does not prevent server startup and only blocks that integration. For example, HTTP 401 can mean authentication failed or the account cannot access the checked resource; 403 means access was denied, 404 points to a missing endpoint or resource, and DNS or timeout messages point to connectivity. Do not assume every failure means the credentials are wrong. Fix the reported cause before restarting Codex, Claude, or the MCP client to avoid repeated authentication attempts. The server does not retry failed checks automatically.
+Use the same `set`, `status`, and `remove` interface for all three integrations. Jira and XWiki prompt for a username and hidden password; Sheets starts the Google OAuth flow and optionally accepts the downloaded Desktop client JSON path:
+
+```sh
+python -m src.credentials set jira
+python -m src.credentials set xwiki
+python -m src.credentials set sheets /path/to/oauth-client.json
+python -m src.credentials status sheets
+python -m src.credentials status jira
+python -m src.credentials remove sheets
+```
+
+Python `keyring` uses macOS Keychain, Windows Credential Manager, or Linux Secret Service/KWallet. File-based keyring backends are rejected. Explicit process environment variables still take precedence; saved keyring entries take precedence over a legacy `.env` file. `.env` remains supported for existing installations and automation, but should contain only configured credential variables.
+
+The MCP server advertises its configured tools immediately and starts the enabled Jira, XWiki, and Google Sheets checks in the background, concurrently and once per process; the Sheets check verifies OAuth and access to the configured workbook. Until an integration check finishes successfully, calls to its tools return a waiting error; after a failure, they return the safe diagnostic and direct the assistant to `get_auth_status`. A failed check does not prevent server startup and only blocks that integration. Do not assume every failure means the credentials are wrong. Fix the reported cause before restarting Codex, Claude, or the MCP client to avoid repeated authentication attempts. The server does not retry failed checks automatically.
 
 ### Configure sprint-sheet automation
 
@@ -72,13 +85,13 @@ Dates are controlled by the caller for each sync. Pass optional `start_date` and
 
 #### Google Sheets authorization
 
-To diagnose Python's read access to the macOS Keychain without changing or displaying stored values, run:
+To diagnose Python's read access to the native credential store without changing or displaying stored values, run:
 
 ```sh
-.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-keychain
+.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-credential-store
 ```
 
-The command reports whether Keychain reads work and whether the OAuth client and token entries exist. It does not test writes. Authorization errors distinguish Keychain access, Google OAuth setup, sign-in/token exchange, TLS connection failures, and saving the token; they never include credential values.
+The command reports whether credential-store reads work and whether the OAuth client and token entries exist. It does not test writes. Authorization errors distinguish credential-store access, Google OAuth setup, sign-in/token exchange, TLS connection failures, and saving the token; they never include credential values.
 
 To test HTTPS to Google's OAuth endpoint without opening a sign-in flow or sending credentials, run:
 
@@ -92,13 +105,13 @@ Create a Google Cloud project, enable the Google Sheets API, and create an OAuth
 .venv/bin/python -m src.integrations.automation.core.sheets.authorize "/path/to/oauth-client.json"
 ```
 
-The command opens Google sign-in, stores both the OAuth client settings and refreshable token in the macOS Keychain, then removes the imported JSON file from its original location. After the first import, the path can be omitted when reauthorizing:
+`python -m src.credentials set sheets /path/to/oauth-client.json` opens Google sign-in, stores both the OAuth client settings and refreshable token in the native credential store, then removes the imported JSON file from its original location. After the first import, the path can be omitted when reauthorizing:
 
 ```sh
-.venv/bin/python -m src.integrations.automation.core.sheets.authorize
+.venv/bin/python -m src.credentials set sheets
 ```
 
-The command never prints credential contents and does not create token files. To revoke access, remove the `mcp-tools.google-sheets` entries from Keychain Access and revoke the app from your Google Account's third-party connections. If authorization expires or is revoked, run the command again.
+The command never prints credential contents and does not create token files. To remove stored Sheets credentials, run `python -m src.credentials remove sheets`; you can also revoke the app from your Google Account's third-party connections. If authorization expires or is revoked, run `python -m src.credentials set sheets` again.
 
 The automation only registers when `enabled = true`. It requires Jira to be enabled, the configured project to exist, and Google OAuth to be completed before a sync call can write the workbook.
 
@@ -106,7 +119,7 @@ Write tools are visible by default. Set `[tools].expose_write = false` to hide t
 
 ## 2. Install the MCP in a project
 
-Install the MCP server once, then register it only in each project where you want it available. The project gets a small client configuration file; the MCP's own `config.toml` and `.env` remain in the separate `MCP-tools/` checkout.
+Install the MCP server once, then register it only in each project where you want it available. The project gets a small client configuration file; the MCP's own `config.toml` and credentials remain in the per-user config directory and native credential manager.
 
 From the MCP-tools repository root, install its dependencies:
 
@@ -201,7 +214,6 @@ The Analysis sheet starts with a compact per-sprint time budget view. Team expec
 - `edit_page` (write) replaces a page's content and can update its title or syntax.
 - `append_section` (write) adds a level-two section to an existing page.
 - `edit_page_section` (write) replaces one section's body while preserving its heading and sibling sections.
-- `move_page` (destructive write) renames or moves a page while preserving version history; it updates links by default and can optionally change the visible title.
 - `list_spaces` (read) lists the spaces available in the selected wiki.
 - `page_tree` (read) lists pages with creator, last editor, modification date, and version; it can filter by space or author.
 - `search_pages` (read) searches page names, titles, content, or objects, with optional space filtering and pagination.

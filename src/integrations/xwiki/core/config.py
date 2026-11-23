@@ -23,6 +23,7 @@ class WikiConfig:
     password: str
     username_env: str | None
     password_env: str | None
+    credential_store_error: str | None = None
 
 
 def _make_wiki(entry: dict) -> WikiConfig:
@@ -35,6 +36,7 @@ def _make_wiki(entry: dict) -> WikiConfig:
         password=_XWIKI_SETTINGS.password,
         username_env=_XWIKI_SETTINGS.username_env,
         password_env=_XWIKI_SETTINGS.password_env,
+        credential_store_error=_XWIKI_SETTINGS.credential_store_error,
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import re
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,11 @@ from .auth import (
 
 
 def _keychain_error(stage: str, error: Exception) -> str:
-    """Describe a Keychain failure without including its item value or raw error."""
+    """Describe a native credential-store failure without exposing backend payloads."""
+    from src.shared.credential_store import CredentialStoreError
+
+    if isinstance(error, CredentialStoreError):
+        return f"Could not {stage}: {error}"
     message = str(error)
     match = re.search(r"\((-?\d+),", message)
     code = int(match.group(1)) if match else None
@@ -29,12 +34,12 @@ def _keychain_error(stage: str, error: Exception) -> str:
         -25300: ("errSecItemNotFound", "The requested Keychain entry does not exist."),
         -25308: ("errSecInteractionNotAllowed", "macOS did not allow the Keychain interaction in this process."),
     }
-    if code in known:
+    if platform.system() == "Darwin" and code in known:
         code_name, explanation = known[code]
         return f"Could not {stage}: {explanation} ({code_name}, OSStatus {code})."
-    if code is not None:
+    if code is not None and platform.system() == "Darwin":
         return f"Could not {stage}: the macOS Keychain returned OSStatus {code}."
-    return f"Could not {stage}: {type(error).__name__}. No Keychain value was displayed."
+    return f"Could not {stage}: {type(error).__name__}. No credential value was displayed."
 
 
 def _exception_chain(error: Exception):
@@ -96,10 +101,10 @@ def _check_keychain(keyring) -> None:
     except Exception as error:
         raise SystemExit(_keychain_error("read the saved Sheets authorization", error)) from None
 
-    print("macOS Keychain read access: OK")
+    print("Native credential-store read access: OK")
     print(f"OAuth client configuration: {'present' if client_config else 'missing'}")
     print(f"Sheets authorization token: {'present' if token else 'missing'}")
-    print("No Keychain values were displayed or changed.")
+    print("No credential values were displayed or changed.")
 
 
 def _check_google_tls() -> None:
@@ -151,7 +156,7 @@ def _read_client_config(path: Path) -> dict[str, Any]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Import a Google OAuth Desktop client into macOS Keychain and authorize Sheets access."
+        description="Import a Google OAuth Desktop client into the native credential store and authorize Sheets access."
     )
     parser.add_argument(
         "client_json",
@@ -160,9 +165,10 @@ def _parser() -> argparse.ArgumentParser:
         help="path to the downloaded OAuth Desktop app JSON; optional after the first import",
     )
     parser.add_argument(
-        "--check-keychain",
+        "--check-credential-store", "--check-keychain",
+        dest="check_keychain",
         action="store_true",
-        help="read-check the macOS Keychain and report only whether MCP entries exist",
+        help="read-check the native credential store and report only whether MCP entries exist",
     )
     parser.add_argument(
         "--check-google-tls",
@@ -217,12 +223,12 @@ def main(argv: list[str] | None = None) -> None:
         if not saved_config:
             raise SystemExit(
                 "Pass the downloaded OAuth Desktop app JSON path the first time; "
-                "after importing it, the argument is optional."
+                "after importing it, the argument is optional. Use `python -m src.credentials set sheets [client.json]`."
             )
         try:
             client_config = json.loads(saved_config)
         except json.JSONDecodeError:
-            raise SystemExit("The OAuth client entry in Keychain is invalid; import the JSON file again.") from None
+            raise SystemExit("The OAuth client entry in the credential store is invalid; import the JSON file again.") from None
 
     try:
         flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
@@ -264,11 +270,11 @@ def main(argv: list[str] | None = None) -> None:
         except OSError:
             pass
 
-    print("Google Sheets authorization complete. The client and refreshable token are stored in macOS Keychain.")
+    print("Google Sheets authorization complete. The client and refreshable token are stored in the native credential store.")
     if source_path and source_removed:
         print("The imported OAuth JSON file was removed from its original location.")
     elif source_path:
-        print("Remove the downloaded OAuth JSON file manually; Keychain now has the stored client configuration.")
+        print("Remove the downloaded OAuth JSON file manually; the credential store has the client configuration.")
 
 
 if __name__ == "__main__":

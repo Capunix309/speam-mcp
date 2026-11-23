@@ -10,17 +10,22 @@ from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import credential_store
+from .paths import config_dir, config_path, env_path
 
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ROOT / "config.toml"
-ENV_PATH = ROOT / ".env"
+CONFIG_DIR = config_dir()
+CONFIG_PATH = config_path()
+ENV_PATH = env_path()
 
 
-def _read_config(path: Path = CONFIG_PATH) -> dict:
+def _read_config(path: Path | None = None) -> dict:
+    path = path or CONFIG_PATH
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise ValueError(f"Missing central configuration: {path}") from None
+        raise ValueError(
+            f"Missing MCP-tools configuration: {path}. Run `python -m src.setup` to create it."
+        ) from None
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"Invalid {path.name}: {exc}") from None
 
@@ -145,10 +150,11 @@ def _credential_keys(data: dict) -> set[str]:
     }
 
 
-def _load_env(path: Path, allowed: set[str]) -> None:
+def _load_env(path: Path, allowed: set[str]) -> set[str]:
     """Load only credential variables referenced by the central configuration."""
+    loaded: set[str] = set()
     if not path.exists():
-        return
+        return loaded
     for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -160,11 +166,14 @@ def _load_env(path: Path, allowed: set[str]) -> None:
             raise ValueError(f".env may contain credentials only; {key} is not referenced by config.toml.")
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
             value = value[1:-1]
-        os.environ.setdefault(key, value)
+        if key not in os.environ:
+            os.environ[key] = value
+            loaded.add(key)
+    return loaded
 
 
 CONFIG = _read_config()
-_load_env(ENV_PATH, _credential_keys(CONFIG))
+_DOTENV_KEYS = _load_env(ENV_PATH, _credential_keys(CONFIG))
 
 
 @dataclass(frozen=True)
@@ -176,6 +185,38 @@ class IntegrationConfig:
     password: str
     username_env: str | None
     password_env: str | None
+    credential_store_error: str | None = None
+
+
+def _integration_credentials(
+    integration_name: str,
+    username_env: str | None,
+    password_env: str | None,
+) -> tuple[str, str, str | None]:
+    """Resolve process env, native keyring, then legacy `.env` values."""
+    env_names = (username_env, password_env)
+    env_values = tuple(os.environ.get(name, "") if name else "" for name in env_names)
+    direct_values = tuple(
+        value if name and name not in _DOTENV_KEYS else ""
+        for name, value in zip(env_names, env_values)
+    )
+
+    saved = None
+    store_error = None
+    if not all(direct_values):
+        try:
+            saved = credential_store.get_integration_credentials(integration_name)
+        except credential_store.CredentialStoreError as error:
+            store_error = str(error)
+
+    stored_values = saved or ("", "")
+    resolved = tuple(
+        direct or stored or (env if name in _DOTENV_KEYS else "")
+        for direct, stored, env, name in zip(direct_values, stored_values, env_values, env_names)
+    )
+    if all(resolved):
+        store_error = None
+    return resolved[0], resolved[1], store_error
 
 
 def integration(name: str) -> IntegrationConfig:
@@ -183,14 +224,20 @@ def integration(name: str) -> IntegrationConfig:
     shared_url = CONFIG["shared"]["base_url"].rstrip("/")
     username_env = entry.get("username_env")
     password_env = entry.get("password_env")
+    if entry["enabled"]:
+        username, password, store_error = _integration_credentials(name, username_env, password_env)
+    else:
+        username = password = ""
+        store_error = None
     return IntegrationConfig(
         enabled=entry["enabled"],
         base_url=shared_url + entry.get("api_path", ""),
         api_path=entry.get("api_path", ""),
-        username=os.environ.get(username_env, "") if username_env else "",
-        password=os.environ.get(password_env, "") if password_env else "",
+        username=username,
+        password=password,
         username_env=username_env,
         password_env=password_env,
+        credential_store_error=store_error,
     )
 
 
