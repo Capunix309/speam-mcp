@@ -58,7 +58,15 @@ class SheetsClient:
             ).execute()
         except Exception as error:
             status = getattr(getattr(error, "resp", None), "status", None)
-            if isinstance(status, int):
+            if status is None:
+                status = getattr(error, "status_code", None)
+            if status is None:
+                status = getattr(error, "code", None)
+            try:
+                status = int(status)
+            except (TypeError, ValueError):
+                status = None
+            if status is not None and 100 <= status <= 599:
                 raise RuntimeError(f"Google Sheets returned HTTP {status}") from None
             raise RuntimeError(
                 f"Google Sheets access check failed ({type(error).__name__})."

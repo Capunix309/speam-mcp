@@ -59,7 +59,7 @@ def require_available(integration: str) -> None:
         )
 
 
-def safe_failure_diagnostic(error: Exception) -> str:
+def safe_failure_diagnostic(error: Exception, integration: str | None = None) -> str:
     """Classify a failed check without exposing response bodies or credentials."""
     message = str(error)
     lowered = message.lower()
@@ -94,6 +94,52 @@ def safe_failure_diagnostic(error: Exception) -> str:
 
     if "credentials are not configured" in lowered:
         return "Credentials are missing from the MCP configuration or environment. Check the configured variable names and that both values are available to the server."
+
+    if "google sheets has not been authorized yet" in lowered:
+        return "Google Sheets has no saved OAuth token. Run `python -m src.credentials set sheets` to authorize the configured Google account."
+    if "saved google authorization is expired or revoked" in lowered:
+        return "The saved Google Sheets OAuth token is expired or revoked. Reauthorize with `python -m src.credentials set sheets`."
+    if "could not load google sheets authorization" in lowered:
+        return (
+            "The saved Google Sheets OAuth data could not be loaded or refreshed. Check native credential-store access with "
+            "`.venv/bin/python -m src.integrations.automation.core.sheets.authorize --check-credential-store`, "
+            "then reauthorize with `python -m src.credentials set sheets` if the entries are missing or invalid."
+        )
+    if "install mcp-tools dependencies" in lowered:
+        return "Google Sheets dependencies are missing from the MCP Python environment. Install the repository requirements before restarting the server."
+    if "google sheets access check failed (httperror)" in lowered:
+        return (
+            "Google Sheets returned an API HTTP error while reading workbook metadata, but the response did not expose a status code. "
+            "Check that the configured spreadsheet ID is valid, the authorized Google account can open that workbook, and the Sheets API is enabled. "
+            "The MCP server log is needed to identify any remaining API-specific cause."
+        )
+
+    sheets_type = re.search(r"google sheets access check failed \(([A-Za-z0-9_.]+)\)", message, flags=re.IGNORECASE)
+    if sheets_type:
+        error_name = sheets_type.group(1).rsplit(".", 1)[-1].casefold()
+        if error_name in {"timeouterror", "timeout", "deadlineexceeded"}:
+            return "The Google Sheets metadata request timed out. Check network access and Google API availability, then retry."
+        if error_name in {"connectionerror", "connectionrefusederror", "gaierror", "urlerror"}:
+            return "The MCP could not connect to the Google Sheets API. Check network/DNS access and the configured OAuth endpoint."
+        if error_name in {"sslerror", "certificateerror"}:
+            return "The TLS certificate for the Google Sheets API could not be verified. Check system certificate trust and network interception settings."
+        if error_name in {"httperror"}:
+            return (
+                "Google Sheets returned an API HTTP error while reading workbook metadata, but the response did not expose a status code. "
+                "Check the spreadsheet ID, Google account access, and Sheets API enablement; inspect server logs for the API-specific cause."
+            )
+        return (
+            f"The Google Sheets metadata request failed with {sheets_type.group(1)} before workbook access was confirmed. "
+            "Check Google OAuth setup, the configured spreadsheet ID, and the MCP server log for the safe cause."
+        )
+
+    if integration == "sheets":
+        return (
+            f"The Google Sheets startup check failed with {error_type} before workbook access was confirmed. "
+            "Check the native credential-store status and saved OAuth client/token, configured spreadsheet ID, "
+            "workbook access for the authorized account, and the Sheets API. "
+            "The server log is needed for any underlying cause not recognized by the MCP diagnostic."
+        )
 
     status_match = re.search(r"returned HTTP (\d{3})\b", message, flags=re.IGNORECASE)
     if status_match:

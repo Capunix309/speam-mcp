@@ -82,7 +82,7 @@ class AuthCheckTests(unittest.TestCase):
         )
         self.assertIn("HTTP 404", xwiki["diagnostic"])
         self.assertIn("Do not assume every AUTH_FAILURE", status_tool.fn.__doc__)
-        self.assertIn("Do not assume credentials are wrong", result["assistant_instruction"])
+        self.assertIn("do not assume credentials are wrong", result["assistant_instruction"].lower())
         self.assertTrue(status_tool.annotations.readOnlyHint)
 
     def test_xwiki_check_uses_legacy_page_resource(self):
@@ -118,6 +118,26 @@ class AuthCheckTests(unittest.TestCase):
                 self.assertIn(expected.lower(), diagnostic.lower())
                 self.assertNotIn("secret response body", diagnostic.lower())
 
+    def test_sheets_oauth_and_api_failures_have_actionable_safe_diagnostics(self):
+        cases = [
+            (RuntimeError("Google Sheets has not been authorized yet."), "no saved oauth token"),
+            (RuntimeError("The saved Google authorization is expired or revoked."), "expired or revoked"),
+            (RuntimeError("Could not load Google Sheets authorization; token=secret"), "could not be loaded or refreshed"),
+            (RuntimeError("Google Sheets access check failed (HttpError)."), "API HTTP error"),
+        ]
+        for error, expected in cases:
+            with self.subTest(error_type=type(error).__name__, expected=expected):
+                diagnostic = auth_state.safe_failure_diagnostic(error, integration="sheets")
+                self.assertIn(expected.lower(), diagnostic.lower())
+                self.assertNotIn("secret", diagnostic.lower())
+                self.assertNotIn("details were withheld", diagnostic.lower())
+
+    def test_unknown_sheets_failure_still_names_actionable_checks(self):
+        diagnostic = auth_state.safe_failure_diagnostic(RuntimeError("unclassified"), integration="sheets")
+        self.assertIn("configured spreadsheet ID", diagnostic)
+        self.assertIn("native credential-store", diagnostic)
+        self.assertNotIn("details were withheld", diagnostic)
+
     def test_sheets_access_failure_retains_http_status_without_response_body(self):
         class Response:
             status = 403
@@ -137,6 +157,20 @@ class AuthCheckTests(unittest.TestCase):
 
         self.assertNotIn("sensitive response body", str(raised.exception))
         self.assertIn("HTTP 403", auth_state.safe_failure_diagnostic(raised.exception))
+
+    def test_sheets_access_accepts_numeric_string_http_status(self):
+        class Response:
+            status = "404"
+
+        class ApiError(Exception):
+            resp = Response()
+
+        client = SheetsClient.__new__(SheetsClient)
+        client.spreadsheet_id = "workbook-id"
+        client._service = Mock()
+        client._service.spreadsheets.return_value.get.return_value.execute.side_effect = ApiError()
+        with self.assertRaisesRegex(RuntimeError, "HTTP 404"):
+            client.check_access()
 
 
 if __name__ == "__main__":

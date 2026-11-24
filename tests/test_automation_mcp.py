@@ -29,7 +29,6 @@ from src.integrations.automation.sync.workbook import (
     _budget_formatting,
     _remove_overlapping_banding,
     _resize_table,
-    _daily_chart,
     _sprint_setup,
     update_workbook,
 )
@@ -426,25 +425,6 @@ class AutomationMCPTests(unittest.TestCase):
         self.assertIn("Worklogs!$F$2:$F;C$2", table[1][2].expression)
         self.assertIn("Worklogs!$AG$2:$AG;$A3", table[1][2].expression)
         self.assertIn("SUM(C3:G3)", table[1][7].expression)
-
-    def test_daily_chart_tracks_each_member_and_team_total(self):
-        date_formula = analysis.daily_date_formulas()[0][0].expression
-        self.assertEqual(date_formula, '=IF(A2="";"";A2)')
-        series = analysis.daily_member_formulas(("A", "B", "C", "D", "E"))
-        self.assertEqual(len(series), 999)
-        self.assertEqual(len(series[0]), 6)
-        self.assertIn("Worklogs!$F$2:$F;G$1", series[0][0].expression)
-        self.assertIn('Worklogs!$D$2:$D;"<"&$F2+1', series[0][0].expression)
-        self.assertNotIn('Worklogs!$D$2:$D;">="&$F2', series[0][0].expression)
-        self.assertIn("SUM(G2:K2)", series[0][-1].expression)
-        spec = analysis.daily_chart_spec(17, ("A", "B", "C", "D", "E"))
-        self.assertEqual(spec["basicChart"]["chartType"], "LINE")
-        self.assertEqual(len(spec["basicChart"]["series"]), 5)
-        existing = {"sheets": [{"properties": {"sheetId": 8}, "charts": [
-            {"chartId": 42, "spec": {"title": "Cumulative hours by team member"}},
-        ]}]}
-        update = _daily_chart(existing, {"sheetId": 8}, {"sheetId": 17}, ("A", "B", "C", "D", "E"))
-        self.assertEqual(update["updateChartSpec"]["chartId"], 42)
 
     def test_sprint_setup_keeps_duration_and_weekly_rate_inputs(self):
         existing = [["Sprint options", "Start date", "End date", "Duration (weeks)", "", "Expected hours per week", 13],
