@@ -99,7 +99,7 @@ def run_enabled_integration_checks() -> None:
                 auth_state.set_status(
                     name,
                     "AUTH_FAILURE",
-                    auth_state.safe_failure_diagnostic(error),
+                    auth_state.safe_failure_diagnostic(error, integration=name),
                     description,
                 )
             else:

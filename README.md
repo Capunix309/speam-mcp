@@ -226,6 +226,7 @@ The Analysis sheet starts with a compact per-sprint time budget view. Team expec
 - `add_tags` (write) adds one or more tags to a page.
 - `page_history` (read) lists recent versions of a page, including authors and dates when available.
 - `diff_page_versions` (read) compares the text content of two page versions.
+- `changes_between` (read) lists page versions modified during an inclusive `start_date`–`end_date` window. Pass `timezone_name` to interpret the calendar dates, then use each result's `space`, `page`, and `version` with `diff_page_versions`. If the result is truncated, continue with its `next_start` value and the same date/timezone arguments.
 - `recent_changes` (read) lists pages modified within a selected number of days.
 - `who_wrote_pages` (read) lists page creators, last editors, and modification dates, with optional space or author filters.
 - `consistency_check` (read) checks scanned pages for required headings and unresolved internal links.
