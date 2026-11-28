@@ -178,17 +178,42 @@ To run the server manually for debugging only, open a terminal in the MCP-tools 
 
 ## Jira tools
 
+### Compact MCP responses
+
+Tool results use compact JSON and summarize service records instead of returning
+large REST envelopes by default. Jira search returns key issue fields
+(`summary`, type, status, assignee, priority, labels, updated date, and parent).
+Pass `fields` with Jira field IDs (including `customfield_N`) to select additional
+fields. Use `include_raw = true` when the full Jira response is needed. Issue
+comments, worklogs, changelog, and Epic children remain opt-in; `include_raw`
+returns the complete requested issue response.
+
+XWiki `read_page` returns page identity and content by default. Use
+`include_metadata = true` and `include_objects = true` for those sections, or
+`include_raw = true` for the complete REST object. Page content and text
+attachments are returned in bounded character windows (`max_chars`, `start`,
+and `next_start`) so long documents can be continued in later calls. Binary
+attachments omit base64 by default; set `include_base64 = true` when the bytes
+are needed. Broad lists default to smaller pages and expose `start`/`limit` for
+pagination. Jira search accepts `fields` for custom field IDs and `include_raw`
+for full Jira issue objects; XWiki search, history, comments, attachment lists,
+and recent changes offer `include_raw` for full REST records.
+
+Write tools return a concise success result by default; `include_raw = true`
+preserves the service response when one is useful. This changes only the
+returned representation, not the MCP's available operations.
+
 - `get_auth_status` (read) reports the startup check performed for each enabled integration and a safe, cause-specific diagnostic. The XWiki check reads the standard `Main.WebHome` page through the legacy page REST API for compatibility with XWiki 15.10.16. Status distinguishes HTTP 401 (authentication or resource access), denied access (403), missing endpoints/resources (404), other HTTP errors, missing credentials, and common network failures. It never returns response bodies or credential values. Tell the user what the diagnostic indicates rather than assuming every failure is an invalid credential. The failed integration remains blocked until its cause is fixed and the MCP server starts again.
 
-- `jira_search` (read) searches configured projects by text, issue type, status, assignee, sprint, or update date. Omit `project` to search all configured projects.
-- `jira_get_issue` (read) returns issue details, optionally including comments, worklogs, change history, or an epic's child issues.
+- `jira_search` (read) searches configured projects by text, issue type, status, assignee, sprint, or update date. Omit `project` to search all configured projects; use `fields` for additional Jira fields and `include_raw` for full REST issue objects.
+- `jira_get_issue` (read) returns a concise issue record, optionally including comments, worklogs, change history, or an epic's child issues; `include_raw` returns the complete requested response.
 - `jira_list_boards` (read) lists boards associated with a configured project.
 - `jira_list_sprints` (read) lists sprints for a project board, optionally filtered by active, future, or closed state.
 - `jira_search_users` (read) finds users assignable to a project by name or email.
 - `jira_get_issue_types` (read) lists the issue types available in a project.
 - `jira_get_priorities` (read) lists Jira priorities for a configured project.
-- `jira_create_issue` (write) creates an issue with a required description prefixed by `[AI]` and adds the `ai-assisted` label; it can set an Epic's required name, story points, and parent Epic.
-- `jira_update_issue` (write) updates an issue's summary, description, assignee, priority, labels, story points, and/or parent Epic; set `clear_epic_link = true` to remove its Epic assignment.
+- `jira_create_issue` (write) creates an issue with a required description prefixed by `[AI]` and adds the `ai-assisted` label; it can set an Epic's required name, story points, parent Epic, or an optional `parent_issue` to create a sub-task. For a sub-task, the requested `issue_type` must be available as a sub-task type in the selected project.
+- `jira_update_issue` (write) updates an issue's summary, description, assignee, priority, labels, story points, Epic link, or parent. Set `parent_issue` to reparent a sub-task or convert a standard issue to a sub-task; when the project has multiple sub-task types, also pass `subtask_issue_type` (name or ID). Set `clear_parent = true` to remove the parent from a standard issue; Jira sub-tasks must retain a parent. Parent changes must stay within the same configured, writable project. Set `clear_epic_link = true` to remove an Epic assignment.
 - `jira_add_comment` (write) adds an issue comment prefixed with `[AI]`.
 - `jira_add_worklog` (write) records time spent with a required comment prefixed with `[AI]`.
 - `jira_transition_issue` (write) moves an issue through one of its currently available workflow transitions.
@@ -208,8 +233,8 @@ The Analysis sheet starts with a compact per-sprint time budget view. Team expec
 
 ## XWiki tools
 
-- `read_page` (read) returns a page's content and metadata.
-- `read_page_section` (read) returns the content under a matching heading.
+- `read_page` (read) returns page identity and content by default; metadata, objects, or the complete REST object are opt-in. Long content uses `start`/`max_chars` pagination.
+- `read_page_section` (read) returns the content under a matching heading, with the same character pagination.
 - `create_page` (write) creates a page with the supplied content, optional title, and syntax.
 - `edit_page` (write) replaces a page's content and can update its title or syntax.
 - `append_section` (write) adds a level-two section to an existing page.
@@ -220,19 +245,19 @@ The Analysis sheet starts with a compact per-sprint time budget view. Team expec
 - `get_page_links` (read) lists XWiki syntax links found on a page.
 - `find_orphan_pages` (read) finds scanned pages with no incoming XWiki syntax links.
 - `list_attachments` (read) lists attachment metadata for a page.
-- `read_attachment` (read) returns a text attachment as text or a binary attachment as base64, within the configured size limit.
+- `read_attachment` (read) returns text in bounded character windows. Binary bytes are omitted unless `include_base64 = true`; both modes respect the configured byte limit.
 - `add_comment` (write) posts a comment on a page.
 - `list_comments` (read) lists comments attached to a page.
 - `add_tags` (write) adds one or more tags to a page.
 - `page_history` (read) lists recent versions of a page, including authors and dates when available.
-- `diff_page_versions` (read) compares the text content of two page versions.
+- `diff_page_versions` (read) compares the text content of two page versions, with `start`/`max_chars` pagination for long diffs.
 - `changes_between` (read) lists page versions modified during an inclusive `start_date`–`end_date` window. Pass `timezone_name` to interpret the calendar dates, then use each result's `space`, `page`, and `version` with `diff_page_versions`. If the result is truncated, continue with its `next_start` value and the same date/timezone arguments.
 - `recent_changes` (read) lists pages modified within a selected number of days.
 - `who_wrote_pages` (read) lists page creators, last editors, and modification dates, with optional space or author filters.
 - `consistency_check` (read) checks scanned pages for required headings and unresolved internal links.
 - `create_page_from_template` (write) creates a meeting, decision, task, or report page from supplied fields.
-- `decision_log` (read) finds likely decision statements and reports their source pages and matching lines.
-- `project_status` (read) collects checkbox tasks and nearby owner labels from pages in a space.
+- `decision_log` (read) finds likely decision statements and reports their source pages and matching lines, with `start`/`limit` pagination.
+- `project_status` (read) collects checkbox tasks and nearby owner labels from a space, with `task_start`/`task_limit` pagination.
 - `wiki_digest` (read) lists recently changed pages with titles, authors, and modification dates.
 
 Every XWiki tool accepts the `wiki` selector. It defaults to the configured `default_wiki`; page names use `space` and `page`, with nested spaces separated by `/`.

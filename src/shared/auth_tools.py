@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
-
 from mcp.types import ToolAnnotations
 
 from . import auth_state
+from .tool_output import compact_json
 
 
 def register(server) -> None:
@@ -23,7 +22,7 @@ def register(server) -> None:
         tools. If a check fails, report its diagnostic to the user and recommend
         fixing the cause before restarting Codex, Claude, or the MCP client.
         """
-        return json.dumps({
+        return compact_json({
             "integrations": {
                 name: {
                     "state": value.state,
@@ -40,4 +39,4 @@ def register(server) -> None:
                 "until the cause is fixed and the MCP server starts again. Do not restart Codex, Claude, "
                 "or the MCP client before the user fixes the cause, to avoid repeated authentication attempts."
             ),
-        }, ensure_ascii=False, indent=2)
+        })

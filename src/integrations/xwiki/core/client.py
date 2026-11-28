@@ -71,8 +71,7 @@ def request(method: str, url: str, body: bytes | None = None, content_type: str 
         with urllib.request.urlopen(req, timeout=45) as response:
             return response.read(), response.headers.get("Content-Type", "")
     except urllib.error.HTTPError as exc:
-        detail = exc.read(800).decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"XWiki returned HTTP {exc.code}" + (f": {detail}" if detail else "")) from None
+        raise RuntimeError(f"XWiki returned HTTP {exc.code}.") from None
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach the XWiki REST API: {exc.reason}") from None
 
@@ -199,3 +198,18 @@ def page_fields(item: dict[str, Any]) -> dict[str, Any]:
         "modified": value_text(item, "modified"),
         "version": value_text(item, "version"),
     }
+
+
+def page_content_result(data: Any, space: str, page: str, include_metadata: bool = False,
+                        include_objects: bool = False, include_raw: bool = False) -> dict[str, Any]:
+    """Return page content by default, adding REST details only when requested."""
+    if include_raw:
+        return data if isinstance(data, dict) else {"page": f"{space}.{page}", "content": data}
+    result: dict[str, Any] = {"page": f"{space}.{page}", "content": value_text(data, "content")}
+    if include_metadata:
+        result["metadata"] = {key: value_text(data, key) for key in (
+            "title", "syntax", "fullName", "version", "author", "creator", "modified", "created",
+        ) if value_text(data, key)}
+    if include_objects and isinstance(data, dict) and data.get("objects") is not None:
+        result["objects"] = data["objects"]
+    return result

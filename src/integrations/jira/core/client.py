@@ -68,7 +68,6 @@ def request(method: str, path: str, params: dict[str, str] | None = None,
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return raw.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
-        detail = exc.read(800).decode("utf-8", errors="replace").strip()
-        raise RuntimeError(f"Jira returned HTTP {exc.code}" + (f": {detail}" if detail else "")) from None
+        raise RuntimeError(f"Jira returned HTTP {exc.code}.") from None
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach the Jira REST API: {exc.reason}") from None

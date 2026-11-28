@@ -51,10 +51,11 @@ class JiraMCPTests(unittest.TestCase):
             create("primary", "Story", "A feature", "")
 
         with patch.object(issue_writes, "request", return_value={"key": "ABC-1"}) as request_mock:
-            create("primary", "Story", "A feature", "Details", ["backend"])
+            response = create("primary", "Story", "A feature", "Details", ["backend"])
         fields = request_mock.call_args.kwargs["body"]["fields"]
         self.assertEqual(fields["description"], "[AI] Details")
         self.assertEqual(fields["labels"], ["backend", "ai-assisted"])
+        self.assertEqual(json.loads(response), {"ok": True, "action": "created", "key": "ABC-1", "id": None})
 
     def test_create_epic_sets_required_epic_name(self):
         create = self.server._tool_manager.get_tool("jira_create_issue").fn
@@ -74,6 +75,28 @@ class JiraMCPTests(unittest.TestCase):
         self.assertEqual(fields["customfield_10006"], 5)
         self.assertEqual(fields["customfield_10001"], "ABC-1")
 
+    def test_create_issue_with_parent_creates_subtask(self):
+        create = self.server._tool_manager.get_tool("jira_create_issue").fn
+        subtask_type = {"id": "5", "name": "Sub-task", "subtask": True}
+        with patch.object(issue_writes, "request", side_effect=[
+            {"issueTypes": [subtask_type]}, {"key": "ABC-9"},
+        ]) as request_mock:
+            create("primary", "Sub-task", "Add validation", "Details", parent_issue="ABC-1")
+        body = request_mock.call_args_list[1].kwargs["body"]
+        self.assertEqual(body["fields"]["issuetype"], {"id": "5"})
+        self.assertEqual(body["fields"]["parent"], {"key": "ABC-1"})
+        self.assertEqual(body["fields"]["description"], "[AI] Details")
+
+    def test_create_issue_parent_must_be_in_the_selected_writable_project(self):
+        create = self.server._tool_manager.get_tool("jira_create_issue").fn
+        integrations = dict(config.CONFIG["integrations"])
+        jira = dict(integrations["jira"])
+        jira["projects"] = [*jira["projects"], {"id": "secondary", "key": "DEF", "read_only": False}]
+        integrations["jira"] = jira
+        with patch.object(config, "CONFIG", {**config.CONFIG, "integrations": integrations}):
+            with self.assertRaisesRegex(ValueError, "must belong to configured project"):
+                create("primary", "Sub-task", "Child", "Details", parent_issue="DEF-1")
+
     def test_update_issue_stores_story_points_and_epic_key_in_jira_fields(self):
         update = self.server._tool_manager.get_tool("jira_update_issue").fn
         with patch.object(issue_writes, "request", return_value={"status": 204}) as request_mock:
@@ -87,6 +110,54 @@ class JiraMCPTests(unittest.TestCase):
             update("ABC-2", clear_epic_link=True)
         fields = request_mock.call_args.kwargs["body"]["fields"]
         self.assertEqual(fields, {"customfield_10001": None})
+
+    def test_update_issue_converts_standard_issue_to_subtask_with_parent(self):
+        update = self.server._tool_manager.get_tool("jira_update_issue").fn
+        subtask_type = {"id": "5", "name": "Sub-task", "subtask": True}
+        with patch.object(issue_writes, "request", side_effect=[
+            {"fields": {"issuetype": {"id": "3", "name": "Task", "subtask": False}}},
+            {"issueTypes": [subtask_type]}, {"status": 204},
+        ]) as request_mock:
+            update("ABC-2", parent_issue="ABC-1")
+        body = request_mock.call_args.kwargs["body"]
+        self.assertEqual(body["fields"]["issuetype"], {"id": "5"})
+        self.assertEqual(body["fields"]["parent"], {"key": "ABC-1"})
+
+    def test_update_issue_reparents_subtask_without_changing_its_type(self):
+        update = self.server._tool_manager.get_tool("jira_update_issue").fn
+        with patch.object(issue_writes, "request", side_effect=[
+            {"fields": {"issuetype": {"id": "5", "name": "Sub-task", "subtask": True}}},
+            {"status": 204},
+        ]) as request_mock:
+            update("ABC-2", parent_issue="ABC-3")
+        self.assertEqual(request_mock.call_args.kwargs["body"]["fields"], {
+            "parent": {"key": "ABC-3"},
+        })
+
+    def test_update_issue_clears_parent_for_standard_issue(self):
+        update = self.server._tool_manager.get_tool("jira_update_issue").fn
+        with patch.object(issue_writes, "request", side_effect=[
+            {"fields": {"issuetype": {"id": "3", "name": "Task", "subtask": False}}},
+            {"status": 204},
+        ]) as request_mock:
+            update("ABC-2", clear_parent=True)
+        self.assertEqual(request_mock.call_args.kwargs["body"], {
+            "update": {"parent": [{"set": {"none": True}}]},
+        })
+
+    def test_update_issue_does_not_clear_required_subtask_parent(self):
+        update = self.server._tool_manager.get_tool("jira_update_issue").fn
+        with patch.object(issue_writes, "request", return_value={
+            "fields": {"issuetype": {"id": "5", "name": "Sub-task", "subtask": True}},
+        }) as request_mock:
+            with self.assertRaisesRegex(ValueError, "must have a parent"):
+                update("ABC-2", clear_parent=True)
+        self.assertEqual(request_mock.call_count, 1)
+
+    def test_update_issue_rejects_setting_and_clearing_parent_together(self):
+        update = self.server._tool_manager.get_tool("jira_update_issue").fn
+        with self.assertRaisesRegex(ValueError, "Set parent_issue or clear_parent"):
+            update("ABC-2", parent_issue="ABC-1", clear_parent=True)
 
     def test_update_issue_rejects_setting_and_clearing_epic_link_together(self):
         update = self.server._tool_manager.get_tool("jira_update_issue").fn
@@ -114,7 +185,12 @@ class JiraMCPTests(unittest.TestCase):
         self.assertEqual(fields["customfield_20008"], "DEF-1")
 
     def test_search_scopes_each_configured_project(self):
-        with patch.object(issue_search, "request", return_value={"issues": [{"key": "ABC-2"}]}) as request_mock:
+        issue = {"key": "ABC-2", "self": "internal", "fields": {
+            "summary": "A task", "issuetype": {"name": "Story", "self": "type-url"},
+            "status": {"name": "Open", "self": "status-url"},
+            "assignee": {"displayName": "Alex", "accountId": "a1"},
+        }}
+        with patch.object(issue_search, "request", return_value={"total": 1, "issues": [issue]}) as request_mock:
             result = self.server._tool_manager.get_tool("jira_search").fn(
                 text='quote "this"', status="Open", max_results=20,
             )
@@ -122,7 +198,21 @@ class JiraMCPTests(unittest.TestCase):
         first_jql = request_mock.call_args_list[0].kwargs["params"]["jql"]
         self.assertIn('project = "ABC"', first_jql)
         self.assertIn('text ~ "quote \\"this\\""', first_jql)
-        self.assertEqual(json.loads(result)["issues"][0]["key"], "ABC-2")
+        self.assertIn("summary,issuetype,status,assignee", request_mock.call_args_list[0].kwargs["params"]["fields"])
+        issue_result = json.loads(result)["issues"][0]
+        self.assertEqual(issue_result["key"], "ABC-2")
+        self.assertEqual(issue_result["type"], "Story")
+        self.assertNotIn("self", issue_result)
+        self.assertEqual(json.loads(result)["total"], 2)
+
+    def test_search_can_return_full_jira_records_on_request(self):
+        raw = {"key": "ABC-2", "self": "internal", "fields": {"summary": "A task", "customfield_123": 4}}
+        with patch.object(issue_search, "request", return_value={"issues": [raw]}) as request_mock:
+            result = self.server._tool_manager.get_tool("jira_search").fn(
+                project="primary", include_raw=True, fields=["summary", "customfield_123"],
+            )
+        self.assertEqual(json.loads(result)["issues"][0], raw)
+        self.assertEqual(request_mock.call_args.kwargs["params"]["fields"], "summary,customfield_123")
 
     def test_issue_read_can_include_epic_children(self):
         with patch.object(issue_reads, "request", side_effect=[
@@ -135,9 +225,23 @@ class JiraMCPTests(unittest.TestCase):
             )
         self.assertEqual(
             request_mock.call_args_list[0].kwargs["params"]["fields"],
-            "summary,description,issuetype,status,assignee,reporter,priority,labels,comment,worklog",
+            "summary,description,issuetype,status,assignee,reporter,priority,labels,parent,project,created,updated,comment,worklog",
         )
         self.assertEqual(json.loads(result)["epic_issues"][0]["key"], "ABC-4")
+
+    def test_issue_default_output_summarizes_jira_nested_records(self):
+        issue = {"key": "ABC-8", "self": "issue-url", "fields": {
+            "summary": "A task", "issuetype": {"name": "Story", "self": "type-url"},
+            "status": {"name": "In Progress", "self": "status-url"},
+            "assignee": {"displayName": "Alex Example", "accountId": "a1", "avatarUrls": {"large": "url"}},
+            "description": "Details", "labels": ["backend"],
+        }}
+        with patch.object(issue_reads, "request", return_value=issue):
+            result = json.loads(self.server._tool_manager.get_tool("jira_get_issue").fn("ABC-8"))
+        self.assertEqual(result["type"], "Story")
+        self.assertEqual(result["status"], "In Progress")
+        self.assertEqual(result["assignee"], {"displayName": "Alex Example", "accountId": "a1"})
+        self.assertNotIn("self", result)
 
     def test_worklog_comment_is_required_and_prefixed(self):
         add_worklog = self.server._tool_manager.get_tool("jira_add_worklog").fn

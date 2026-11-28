@@ -30,9 +30,10 @@ from src.integrations.automation.sync.workbook import (
     _remove_overlapping_banding,
     _resize_table,
     _sprint_setup,
+    _missing_formula_requests,
     update_workbook,
 )
-from src.shared import config
+from src.shared import auth_state, config
 
 
 def settings() -> AutomationSettings:
@@ -78,6 +79,15 @@ def worklog(worklog_id: str = "99", key: str = "ABC-1") -> dict:
 
 
 class AutomationMCPTests(unittest.TestCase):
+    def setUp(self):
+        # These tests exercise automation logic with mocked integrations; the
+        # independent auth-check tests cover CHECKING/AUTH_FAILURE behavior.
+        auth_state.reset()
+        auth_state.set_status("sheets", "READY", "Mocked Sheets access is available.")
+
+    def tearDown(self):
+        auth_state.reset()
+
     def test_automation_uses_custom_fields_from_its_selected_jira_project(self):
         integrations = dict(config.CONFIG["integrations"])
         jira = dict(integrations["jira"])
@@ -410,21 +420,35 @@ class AutomationMCPTests(unittest.TestCase):
         self.assertIn("COUNTIFS(Worklogs!", summary[0].expression)
         self.assertIn('"Done"', summary[2].expression)
         effort = analysis.effort_column_formulas()
-        self.assertEqual(set(effort), {0, 1, 2, 7, 8, 9})
+        self.assertEqual(set(effort), {0, 1, 2, 7, 8, 9, 10})
         self.assertEqual(len(effort[2]), 6)
         self.assertIn("'Hours by Person'!H2", effort[2][0].expression)
+        self.assertIn("'Hours by Person'!L2", effort[8][0].expression)
+        self.assertIn("'Hours by Person'!I2", effort[9][0].expression)
+        self.assertIn("'Hours by Person'!J2", effort[10][0].expression)
+        stddev = analysis.standard_deviation_formulas()
+        self.assertEqual(len(stddev), 6)
+        self.assertIn("STDEV.S", stddev[0].expression)
+        self.assertIn("Person Task Effort", stddev[0].expression)
+        self.assertIn('Analysis!$B$12="All sprints"', stddev[0].expression)
+        self.assertIn('"Done"', stddev[-1].expression)
 
     def test_budget_table_calculates_expected_hours_from_sprint_setup(self):
         table = analysis.budget_table(("A", "B", "C", "D", "E"))
-        self.assertEqual(table[0], ["Sprint", "Expected (team)", "A", "B", "C", "D", "E", "Total"])
-        self.assertEqual(len(table), 6)
-        expected = table[1][1].expression
+        self.assertEqual(table[0], ["Sprint", "Expected (team)", "A", "", "B", "", "C", "", "D", "", "E", "", "Total", ""])
+        self.assertEqual(table[1], ["", "", "Value", "Delta", "Value", "Delta", "Value", "Delta", "Value", "Delta", "Value", "Delta", "Value", "Delta"])
+        self.assertEqual(len(table), 8)  # two headers, five sprints, grand total
+        expected = table[2][1].expression
         self.assertIn("'Sprint Setup'!$D$3:$D$100", expected)
         self.assertIn("'Sprint Setup'!$G$1", expected)
-        self.assertIn("COUNTA($C$2:$G$2)", expected)
-        self.assertIn("Worklogs!$F$2:$F;C$2", table[1][2].expression)
-        self.assertIn("Worklogs!$AG$2:$AG;$A3", table[1][2].expression)
-        self.assertIn("SUM(C3:G3)", table[1][7].expression)
+        self.assertIn("COUNTA($C$2:$L$2)", expected)
+        self.assertIn("Worklogs!$F$2:$F;C$2", table[2][2].expression)
+        self.assertIn("Worklogs!$AG$2:$AG;$A4", table[2][2].expression)
+        self.assertIn("SUM(C4;E4;G4;I4;K4)", table[2][3].expression)
+        self.assertEqual(table[2][-2].expression, "=C4+E4+G4+I4+K4")
+        self.assertEqual(table[2][-1].expression, "=D4+F4+H4+J4+L4")
+        self.assertEqual(table[-1][0], "Total")
+        self.assertIn("SUM(B4:B8)", table[-1][1].expression)
 
     def test_sprint_setup_keeps_duration_and_weekly_rate_inputs(self):
         existing = [["Sprint options", "Start date", "End date", "Duration (weeks)", "", "Expected hours per week", 13],
@@ -457,6 +481,19 @@ class AutomationMCPTests(unittest.TestCase):
             "endRowIndex": 5,
             "startColumnIndex": 2,
             "endColumnIndex": 3,
+        })
+
+    def test_formula_seeding_never_replaces_an_existing_formula(self):
+        desired = [[Formula("=SUM(A1:A2)"), Formula("=COUNT(A1:A2)"), "literal"]]
+        requests = _missing_formula_requests(
+            17, 4, 0, desired, [["=CUSTOM_FORMULA()", "", ""]],
+        )
+        self.assertEqual(len(requests), 1)
+        update = requests[0]["updateCells"]
+        self.assertEqual(update["range"]["startColumnIndex"], 1)
+        self.assertEqual(update["range"]["endColumnIndex"], 2)
+        self.assertEqual(update["rows"][0]["values"][0]["userEnteredValue"], {
+            "formulaValue": "=COUNT(A1:A2)",
         })
 
     def test_sync_filters_all_project_worklogs_by_local_date_window(self):
@@ -525,6 +562,7 @@ class AutomationMCPTests(unittest.TestCase):
             "Person Task Effort": [["Issue Key", "Task", "Person", "Task Story Points", "Task Actual Hours",
                                     "Person Actual Hours", "Share of Task Hours", "Person Allocated Story Points",
                                     "Hours per Allocated Point", "Sprint"]],
+            "Hours by Person": [["Person"]],
             "Sprint Setup": [["Sprint options"], ["All sprints"]],
         }
 
@@ -539,11 +577,11 @@ class AutomationMCPTests(unittest.TestCase):
                     }}}
                     for index, name in enumerate((
                         "Worklogs", "Analysis", "Task Analysis", "Person Task Effort",
-                        "Burndown Data", "Sprint Setup",
+                        "Hours by Person", "Burndown Data", "Sprint Setup",
                     ), start=1)
                 ]}
 
-            def values(self, sheet, _range):
+            def values(self, sheet, _range, *_args):
                 return headers.get(sheet, [])
 
             def apply(self, requests):

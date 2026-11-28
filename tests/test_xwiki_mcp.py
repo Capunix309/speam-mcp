@@ -7,11 +7,78 @@ from unittest.mock import patch
 from src.integrations.xwiki.core import config as xwiki_config
 from src.integrations.xwiki.core.client import normalize_space_path, page_url
 from src.integrations.xwiki.tools import reports
+from src.integrations.xwiki.tools import pages as page_tools
+from src.integrations.xwiki.tools import attachments as attachment_tools
+from src.integrations.xwiki.tools import workflow as wiki_workflow
 from src.server import create_server
 from src.shared import config
 
 
 class XWikiMCPTests(unittest.TestCase):
+    def test_read_page_defaults_to_content_and_supports_metadata_objects_and_raw(self):
+        from mcp.server.fastmcp import FastMCP
+
+        server = FastMCP("xwiki-page-output-test")
+        page_tools.register(server)
+        read_page = server._tool_manager.get_tool("read_page").fn
+        data = {"title": "Page title", "content": "0123456789", "syntax": "xwiki/2.1",
+                "version": "3.2", "objects": [{"className": "Example"}], "internal": "not in default"}
+        with patch("src.integrations.xwiki.tools.pages.get_page", return_value=data):
+            default = json.loads(read_page("Space", "Page", max_chars=5))
+            details = json.loads(read_page("Space", "Page", include_metadata=True, include_objects=True,
+                                           start=5, max_chars=5))
+            raw = json.loads(read_page("Space", "Page", include_raw=True))
+        self.assertEqual(default, {"page": "Space.Page", "content": "01234", "totalChars": 10,
+                                  "truncated": True, "next_start": 5})
+        self.assertEqual(details["content"], "56789")
+        self.assertEqual(details["metadata"]["title"], "Page title")
+        self.assertEqual(details["objects"], [{"className": "Example"}])
+        self.assertEqual(raw, data)
+
+    def test_binary_attachment_is_omitted_by_default_and_available_on_request(self):
+        from mcp.server.fastmcp import FastMCP
+
+        server = FastMCP("xwiki-attachment-output-test")
+        attachment_tools.register(server)
+        read_attachment = server._tool_manager.get_tool("read_attachment").fn
+        with patch("src.integrations.xwiki.tools.attachments.request", return_value=(bytes([0, 1]), "application/pdf")):
+            default = json.loads(read_attachment("Space", "Page", "diagram.pdf"))
+            full = json.loads(read_attachment("Space", "Page", "diagram.pdf", include_base64=True))
+        self.assertNotIn("base64", default)
+        self.assertEqual(default["size"], 2)
+        self.assertEqual(full["base64"], "AAE=")
+
+    def test_project_status_returns_a_paginated_task_window(self):
+        from mcp.server.fastmcp import FastMCP
+
+        server = FastMCP("xwiki-project-status-output-test")
+        wiki_workflow.register(server)
+        tool = server._tool_manager.get_tool("project_status").fn
+        pages = [
+            {"fullName": "wiki:Space.First", "space": "Space", "name": "First", "title": "First"},
+            {"fullName": "wiki:Space.Second", "space": "Space", "name": "Second", "title": "Second"},
+        ]
+        with patch("src.integrations.xwiki.tools.workflow.all_pages", return_value=pages), patch(
+            "src.integrations.xwiki.tools.workflow.get_page", side_effect=[
+                {"content": "[ ] First task" + chr(10) + "[x] Done task"},
+                {"content": "[ ] Third task"},
+            ],
+        ):
+            first = json.loads(tool("Space", task_limit=2))
+            # Re-read the deterministic fixtures for the second page of tasks.
+            with patch("src.integrations.xwiki.tools.workflow.all_pages", return_value=pages), patch(
+                "src.integrations.xwiki.tools.workflow.get_page", side_effect=[
+                    {"content": "[ ] First task" + chr(10) + "[x] Done task"},
+                    {"content": "[ ] Third task"},
+                ],
+            ):
+                second = json.loads(tool("Space", task_start=2, task_limit=2))
+        self.assertEqual(first["total"], 3)
+        self.assertEqual(len(first["tasks"]), 2)
+        self.assertEqual(first["next_task_start"], 2)
+        self.assertEqual(len(second["tasks"]), 1)
+        self.assertIsNone(second["next_task_start"])
+
     def test_nested_space_paths_are_normalized_consistently(self):
         self.assertEqual(normalize_space_path("Planning.Equipe"), "Planning/Equipe")
         self.assertEqual(normalize_space_path("Planning/Equipe"), "Planning/Equipe")

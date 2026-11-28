@@ -1,17 +1,19 @@
 """List sprints belonging to a configured project's boards."""
 
-import json
+
 
 from mcp.types import ToolAnnotations
 
 from ...core.client import request
 from ...core.validation import read_project_key
+from src.shared.tool_output import compact_json
 
 
 def register(server) -> None:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
-    def jira_list_sprints(project: str, board_id: int, state: str | None = None) -> str:
-        """List a project's board sprints, optionally filtered by active, future, or closed state."""
+    def jira_list_sprints(project: str, board_id: int, state: str | None = None,
+                          include_raw: bool = False) -> str:
+        """List board sprints; include_raw returns Jira's complete response."""
         key = read_project_key(project)
         _positive_id(board_id)
         boards = request(
@@ -26,7 +28,13 @@ def register(server) -> None:
                 raise ValueError("state must be active, future, or closed.")
             params["state"] = state.casefold()
         result = request("GET", f"/rest/agile/1.0/board/{board_id}/sprint", params=params)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if include_raw:
+            return compact_json(result)
+        sprints = [{key: item[key] for key in ("id", "name", "state", "startDate", "endDate",
+                                                "completeDate", "goal", "originBoardId")
+                    if item.get(key) is not None} for item in result.get("values", [])]
+        return compact_json({"sprints": sprints, "total": result.get("total", len(sprints)),
+                             "isLast": result.get("isLast", True)})
 
 
 def _positive_id(value: int) -> int:
