@@ -32,6 +32,7 @@ def update_workbook(
     worklogs_table = _table_for_sheet(metadata, sheets["Worklogs"]["sheetId"])
     worklog_range = "A1:AI2000" if worklog_columns >= 35 else "A1:AG2000"
     existing_worklogs = client.values("Worklogs", worklog_range)
+    worklog_formulas = client.values("Worklogs", worklog_range, "FORMULA")
     task_rows = client.values("Task Analysis", "A1:M1000")
     task_formulas = client.values("Task Analysis", "A1:M1000", "FORMULA")
     person_rows = client.values("Person Task Effort", "A1:J2000")
@@ -46,21 +47,16 @@ def update_workbook(
     if not existing_worklogs or not task_rows or not person_rows or not setup_rows:
         raise ValueError("One or more workbook tables are missing their header row.")
 
-    if _cell(hours_by_person_rows, 0, 11) in (None, ""):
-        requests_header = update_cells_request(
-            sheets["Hours by Person"]["sheetId"], 0, 11, [["Std"]],
-        )
-    else:
-        requests_header = None
-
     worklog_values = worklog_table.refresh_worklogs(existing_worklogs, worklogs, sprint_name)
     task_updates, person_updates = issue_tables.plan_issue_updates(
         task_rows, person_rows, issues, sprint_name, settings,
     )
     setup_values = _sprint_setup(setup_rows, sprint_name, start_date, end_date)
     requests: list[dict[str, Any]] = []
-    if requests_header:
-        requests.append(requests_header)
+    requests.extend(_changed_literal_requests(
+        sheets["Hours by Person"]["sheetId"], 0, 11, [["Std"]],
+        hours_by_person_rows, hours_by_person_formulas,
+    ))
     requests.extend(_missing_formula_requests(
         sheets["Hours by Person"]["sheetId"], 1, 11,
         [[formula] for formula in analysis.standard_deviation_formulas()],
@@ -80,11 +76,6 @@ def update_workbook(
         }})
         analysis_rows.insert(8, [])
         analysis_formulas.insert(8, [])
-    last_task_row = issue_tables._next_empty_row(task_rows, 0) - 1
-    last_person_row = issue_tables._next_empty_row(person_rows, 0) - 1
-    new_task_rows = [index for index, _ in task_updates if index > last_task_row]
-    new_person_rows = [index for index, _ in person_updates if index > last_person_row]
-
     if worklog_columns < 35:
         requests.append({"appendDimension": {
             "sheetId": sheets["Worklogs"]["sheetId"], "dimension": "COLUMNS", "length": 35 - worklog_columns,
@@ -95,18 +86,17 @@ def update_workbook(
     clear_to = max(old_count, len(body_rows))
     body_rows += [[""] * 35 for _ in range(clear_to - len(body_rows))]
     if body_rows:
-        requests.append(update_cells_request(sheets["Worklogs"]["sheetId"], 1, 0, body_rows))
-    if len(body_rows) > old_count and worklogs_table is None:
-        first_new_row = old_count + 1
-        source_row = max(1, old_count)
-        requests.append(_copy_format(
-            sheets["Worklogs"]["sheetId"], source_row, first_new_row, 1 + len(body_rows), 35,
+        requests.extend(_changed_literal_requests(
+            sheets["Worklogs"]["sheetId"], 1, 0, body_rows,
+            existing_worklogs, worklog_formulas,
         ))
     if worklogs_table is not None:
-        requests.extend(_remove_overlapping_banding(metadata, worklogs_table, len(worklog_values)))
         requests.append(_resize_table(worklogs_table, len(worklog_values)))
     if worklog_columns < 35:
-        requests.append(update_cells_request(sheets["Worklogs"]["sheetId"], 0, 33, [worklog_values[0][33:35]]))
+        requests.extend(_changed_literal_requests(
+            sheets["Worklogs"]["sheetId"], 0, 33, [worklog_values[0][33:35]],
+            existing_worklogs, worklog_formulas,
+        ))
 
     for row_index, row in task_updates:
         _extend_rows(requests, sheets["Task Analysis"], row_index + 1)
@@ -114,11 +104,9 @@ def update_workbook(
             sheets["Task Analysis"]["sheetId"], row_index, 0, [row],
             [_row_or_empty(task_formulas, row_index, 13)],
         ))
-    _append_row_slices(
-        requests, sheets["Task Analysis"]["sheetId"],
-        task_updates,
-        [(0, 5), (8, 10)],
-    )
+        requests.extend(_changed_literal_requests(
+            sheets["Task Analysis"]["sheetId"], row_index, 0, [row], task_rows, task_formulas,
+        ))
 
     for row_index, row in person_updates:
         _extend_rows(requests, sheets["Person Task Effort"], row_index + 1)
@@ -126,21 +114,8 @@ def update_workbook(
             sheets["Person Task Effort"]["sheetId"], row_index, 0, [row],
             [_row_or_empty(person_formulas, row_index, 10)],
         ))
-    _append_row_slices(
-        requests, sheets["Person Task Effort"]["sheetId"],
-        person_updates,
-        [(0, 3), (9, 10)],
-    )
-
-    if new_task_rows and last_task_row >= 1:
-        requests.append(_copy_format(
-            sheets["Task Analysis"]["sheetId"], last_task_row, min(new_task_rows),
-            max(new_task_rows) + 1, 13,
-        ))
-    if new_person_rows and last_person_row >= 1:
-        requests.append(_copy_format(
-            sheets["Person Task Effort"]["sheetId"], last_person_row, min(new_person_rows),
-            max(new_person_rows) + 1, 10,
+        requests.extend(_changed_literal_requests(
+            sheets["Person Task Effort"]["sheetId"], row_index, 0, [row], person_rows, person_formulas,
         ))
 
     requests.extend(_changed_literal_requests(
@@ -157,8 +132,7 @@ def update_workbook(
     requests.extend(_missing_formula_requests(
         analysis_id, 13, 0, summary_formulas, analysis_formulas[13:14],
     ))
-    # Keep the full-precision formula for calculations, but display hours to
-    # whole hours so the summary card does not expose repeating decimals.
+    # Keep the full-precision formula for calculations, but display whole hours.
     requests.append({"repeatCell": {
         "range": {"sheetId": analysis_id, "startRowIndex": 13, "endRowIndex": 14,
                   "startColumnIndex": 0, "endColumnIndex": 1},
@@ -197,16 +171,7 @@ def update_workbook(
     requests.extend(_changed_literal_requests(
         burndown_id, 0, 5, daily_headers, burndown_formulas, burndown_formulas,
     ))
-    requests.extend(_budget_formatting(analysis_id, metadata, len(settings.team_members)))
-    requests.append({"repeatCell": {
-        "range": {"sheetId": burndown_id, "startRowIndex": 0, "endRowIndex": 1,
-                  "startColumnIndex": 5, "endColumnIndex": 12},
-        "cell": {"userEnteredFormat": {
-            "backgroundColor": {"red": 0.12, "green": 0.25, "blue": 0.38},
-            "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
-        }},
-        "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat",
-    }})
+    requests.extend(_budget_number_formats(analysis_id, len(settings.team_members)))
     burn_formulas = burndown.burndown_formulas(last_row=1000)
     date_formulas = analysis.daily_date_formulas(last_row=1000)
     member_formulas = analysis.daily_member_formulas(settings.team_members, last_row=1000)
@@ -339,28 +304,6 @@ def _changed_literal_requests(
     return requests
 
 
-def _append_row_slices(
-    requests: list[dict[str, Any]],
-    sheet_id: int,
-    updates: list[tuple[int, list[Any]]],
-    column_ranges: list[tuple[int, int]],
-) -> None:
-    """Write only data columns for contiguous existing rows, preserving formula columns."""
-    if not updates:
-        return
-    updates = sorted(updates, key=lambda item: item[0])
-    runs: list[list[tuple[int, list[Any]]]] = []
-    for update in updates:
-        if not runs or update[0] != runs[-1][-1][0] + 1:
-            runs.append([update])
-        else:
-            runs[-1].append(update)
-    for run in runs:
-        for start_column, end_column in column_ranges:
-            rows = [row[start_column:end_column] for _, row in run]
-            requests.append(update_cells_request(sheet_id, run[0][0], start_column, rows))
-
-
 def _sprint_setup(existing: list[list[Any]], sprint_name: str, start_date: date, end_date: date) -> list[list[Any]]:
     """Update the selector list and store the resolved reporting window."""
     rows = [list(row[:7]) + [""] * max(0, 7 - len(row)) for row in existing]
@@ -384,165 +327,19 @@ def _sprint_setup(existing: list[list[Any]], sprint_name: str, start_date: date,
     return rows
 
 
-def _budget_formatting(analysis_id: int, metadata: dict[str, Any], member_count: int = 5) -> list[dict[str, Any]]:
-    """Style the two-level budget table and color value/delta text by attainment."""
+def _budget_number_formats(analysis_id: int, member_count: int = 5) -> list[dict[str, Any]]:
+    """Set numeric display formats without changing colors or other styling."""
     first_person_column = 2
     total_value_column = first_person_column + member_count * 2
     last_column = total_value_column + 2
-    requests: list[dict[str, Any]] = [
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 0, "endRowIndex": 9,
-                      "startColumnIndex": 0, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": 1, "green": 1, "blue": 1},
-                "textFormat": {"foregroundColor": {"red": .10, "green": .16, "blue": .24},
-                               "fontFamily": "Arial", "fontSize": 10, "bold": False},
-                "verticalAlignment": "MIDDLE",
-                "wrapStrategy": "CLIP",
-            }},
-            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,"
-                      "userEnteredFormat.verticalAlignment,userEnteredFormat.wrapStrategy",
-        }},
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 0, "endRowIndex": 1,
-                      "startColumnIndex": 0, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": .90, "green": .93, "blue": .96},
-                "textFormat": {"foregroundColor": {"red": .10, "green": .16, "blue": .24},
-                               "fontFamily": "Arial", "fontSize": 11, "bold": True},
-                "horizontalAlignment": "CENTER",
-            }},
-            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,"
-                      "userEnteredFormat.horizontalAlignment",
-        }},
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 1, "endRowIndex": 2,
-                      "startColumnIndex": 0, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": .84, "green": .89, "blue": .94},
-                "textFormat": {"foregroundColor": {"red": .10, "green": .16, "blue": .24},
-                               "fontFamily": "Arial", "fontSize": 10, "bold": True},
-                "horizontalAlignment": "CENTER",
-            }},
-            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,"
-                      "userEnteredFormat.horizontalAlignment",
-        }},
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 2, "endRowIndex": 3,
-                      "startColumnIndex": 0, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": .93, "green": .95, "blue": .97},
-                "textFormat": {"foregroundColor": {"red": .17, "green": .29, "blue": .40},
-                               "fontFamily": "Arial", "fontSize": 9, "bold": True},
-                "horizontalAlignment": "CENTER",
-            }},
-            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat,userEnteredFormat.horizontalAlignment",
-        }},
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 8, "endRowIndex": 9,
-                      "startColumnIndex": 0, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": .91, "green": .94, "blue": .97},
-                "textFormat": {"bold": True},
-            }},
-            "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.bold",
-        }},
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
-                      "startColumnIndex": 1, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0.0"}}},
-            "fields": "userEnteredFormat.numberFormat",
-        }},
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 1, "endRowIndex": 3,
-                      "startColumnIndex": 0, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER"}},
-            "fields": "userEnteredFormat.horizontalAlignment",
-        }},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": analysis_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
-            "properties": {"pixelSize": 28}, "fields": "pixelSize",
-        }},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": analysis_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 3},
-            "properties": {"pixelSize": 24}, "fields": "pixelSize",
-        }},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": analysis_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
-            "properties": {"pixelSize": 95}, "fields": "pixelSize",
-        }},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": analysis_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
-            "properties": {"pixelSize": 120}, "fields": "pixelSize",
-        }},
-        {"updateDimensionProperties": {
-            "range": {"sheetId": analysis_id, "dimension": "COLUMNS", "startIndex": 2, "endIndex": last_column},
-            "properties": {"pixelSize": 88}, "fields": "pixelSize",
-        }},
-        {"repeatCell": {
-            "range": {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
-                      "startColumnIndex": 1, "endColumnIndex": last_column},
-            "cell": {"userEnteredFormat": {"horizontalAlignment": "RIGHT"}},
-            "fields": "userEnteredFormat.horizontalAlignment",
-        }},
-    ]
-    merge_ranges = [
-        (1, 0, 3, 1), (1, 1, 3, 2),
-        *[(1, first_person_column + i * 2, 2, first_person_column + i * 2 + 2)
-          for i in range(member_count)],
-        (1, total_value_column, 2, total_value_column + 2),
-    ]
-    existing_merges = next((sheet.get("merges", []) for sheet in metadata.get("sheets", [])
-                            if sheet.get("properties", {}).get("sheetId") == analysis_id), [])
-    for start_row, start_col, end_row, end_col in merge_ranges:
-        grid_range = {"sheetId": analysis_id, "startRowIndex": start_row, "endRowIndex": end_row,
-                      "startColumnIndex": start_col, "endColumnIndex": end_col}
-        if not any(all(merge.get(key) == value for key, value in grid_range.items())
-                   for merge in existing_merges):
-            requests.append({"mergeCells": {"range": grid_range, "mergeType": "MERGE_ALL"}})
-    # Keep the budget's delta text colors current without accumulating rules on
-    # every sync. Limit deletion to rules touching delta cells in this table.
+    requests = [{"repeatCell": {
+        "range": {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
+                  "startColumnIndex": 1, "endColumnIndex": last_column},
+        "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0.0"}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }}]
     delta_columns = [first_person_column + i * 2 + 1 for i in range(member_count)] + [total_value_column + 1]
-    existing_rules = next((sheet.get("conditionalFormats", []) for sheet in metadata.get("sheets", [])
-                           if sheet.get("properties", {}).get("sheetId") == analysis_id), [])
-    stale_rule_indexes = []
-    for rule_index, rule in enumerate(existing_rules):
-        if any(
-            grid_range.get("sheetId") == analysis_id
-            and grid_range.get("startRowIndex", 0) < 9
-            and grid_range.get("endRowIndex", 10) > 3
-            and any(grid_range.get("startColumnIndex", 0) <= column < grid_range.get("endColumnIndex", last_column)
-                    for column in delta_columns)
-            for grid_range in rule.get("ranges", [])
-        ):
-            stale_rule_indexes.append(rule_index)
-    for rule_index in reversed(stale_rule_indexes):
-        requests.append({"deleteConditionalFormatRule": {"sheetId": analysis_id, "index": rule_index}})
-
-    person_delta_ranges = [
-        {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
-         "startColumnIndex": column, "endColumnIndex": column + 1}
-        for column in delta_columns[:-1]
-    ]
-    total_delta_range = [{
-        "sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
-        "startColumnIndex": delta_columns[-1], "endColumnIndex": delta_columns[-1] + 1,
-    }]
-    for ranges in (person_delta_ranges, total_delta_range):
-        for condition, color in (("NUMBER_LESS", {"red": .75, "green": .14, "blue": .14}),
-                                 ("NUMBER_GREATER_THAN_EQ", {"red": .10, "green": .48, "blue": .25})):
-            requests.append({"addConditionalFormatRule": {
-                "rule": {
-                    "ranges": ranges,
-                    "booleanRule": {
-                        "condition": {"type": condition, "values": [{"userEnteredValue": "0"}]},
-                        "format": {"textFormat": {"foregroundColor": color}},
-                    },
-                },
-                "index": 0,
-            }})
-    for _, delta_column in [(first_person_column + i * 2, first_person_column + i * 2 + 1)
-                            for i in range(member_count)] + [(total_value_column, total_value_column + 1)]:
+    for delta_column in delta_columns:
         requests.append({"repeatCell": {
             "range": {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
                       "startColumnIndex": delta_column, "endColumnIndex": delta_column + 1},
@@ -581,48 +378,6 @@ def _resize_table(table: dict[str, Any], row_count: int) -> dict[str, Any]:
         "updateTable": {
             "table": {"tableId": table["tableId"], "range": table_range},
             "fields": "range",
-        }
-    }
-
-
-def _remove_overlapping_banding(
-    metadata: dict[str, Any], table: dict[str, Any], row_count: int,
-) -> list[dict[str, Any]]:
-    """Remove old copied banding that would block extending the Google table."""
-    table_range = table["range"]
-    old_end = table_range.get("endRowIndex", 0)
-    new_end = max(1, row_count)
-    if new_end <= old_end:
-        return []
-
-    sheet = next((item for item in metadata.get("sheets", [])
-                  if item.get("properties", {}).get("sheetId") == table_range.get("sheetId")), {})
-    start_column = table_range.get("startColumnIndex", 0)
-    end_column = table_range.get("endColumnIndex", 0)
-    requests = []
-    for banding in sheet.get("bandedRanges", []):
-        band_range = banding.get("range", {})
-        band_start = band_range.get("startRowIndex", 0)
-        band_end = band_range.get("endRowIndex", 0)
-        columns_overlap = (
-            band_range.get("startColumnIndex", 0) < end_column
-            and band_range.get("endColumnIndex", 0) > start_column
-        )
-        if band_start >= old_end and band_start < new_end and band_end > old_end and columns_overlap:
-            requests.append({"deleteBanding": {"bandedRangeId": banding["bandedRangeId"]}})
-    return requests
-
-
-def _copy_format(sheet_id: int, source_row: int, first_target: int, end_target: int, columns: int) -> dict[str, Any]:
-    """Copy only formatting from the last existing row to newly appended rows."""
-    return {
-        "copyPaste": {
-            "source": {"sheetId": sheet_id, "startRowIndex": source_row, "endRowIndex": source_row + 1,
-                       "startColumnIndex": 0, "endColumnIndex": columns},
-            "destination": {"sheetId": sheet_id, "startRowIndex": first_target, "endRowIndex": end_target,
-                            "startColumnIndex": 0, "endColumnIndex": columns},
-            "pasteType": "PASTE_FORMAT",
-            "pasteOrientation": "NORMAL",
         }
     }
 
