@@ -1,16 +1,17 @@
 """Move Jira issues through their available workflow transitions."""
 
-import json
+
 
 from mcp.types import ToolAnnotations
 
 from ...core.client import request
 from .....shared import config
+from src.shared.tool_output import compact_json
 
 
 def register(server) -> None:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    def jira_transition_issue(issue: str, transition: str) -> str:
+    def jira_transition_issue(issue: str, transition: str, include_raw: bool = False) -> str:
         """Move an issue using the exact name or id of one of its available transitions."""
         key = config.jira_issue_key(issue, write=True)
         if not transition.strip():
@@ -29,4 +30,6 @@ def register(server) -> None:
             "POST", f"/rest/api/2/issue/{key}/transitions",
             body={"transition": {"id": str(selected["id"])}},
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return compact_json(result if include_raw else {
+            "ok": True, "issue": key, "transition": selected.get("name"),
+        })

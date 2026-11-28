@@ -1,16 +1,18 @@
 """Record work against Jira issues with an AI-attributed comment."""
 
-import json
+
 
 from mcp.types import ToolAnnotations
 
 from ...core.client import request
 from .....shared import config
+from src.shared.tool_output import compact_json
 
 
 def register(server) -> None:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    def jira_add_worklog(issue: str, time_spent: str, comment: str) -> str:
+    def jira_add_worklog(issue: str, time_spent: str, comment: str,
+                         include_raw: bool = False) -> str:
         """Record time spent using Jira duration syntax and a required [AI]-prefixed comment."""
         key = config.jira_issue_key(issue, write=True)
         if not time_spent.strip():
@@ -24,4 +26,6 @@ def register(server) -> None:
             "POST", f"/rest/api/2/issue/{key}/worklog",
             body={"timeSpent": time_spent.strip(), "comment": text},
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return compact_json(result if include_raw else {"ok": True, "issue": key,
+                                                       "worklog_id": result.get("id"),
+                                                       "time_spent": time_spent.strip()})

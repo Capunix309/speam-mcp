@@ -1,12 +1,14 @@
 """Register the single public sprint-to-sheet automation tool."""
 
+
 from __future__ import annotations
 
-import json
+
 
 from mcp.types import ToolAnnotations
 
 from ..sync.service import sync_sprint
+from src.shared.tool_output import compact_json
 
 
 def register(server) -> None:
@@ -29,4 +31,4 @@ def register(server) -> None:
         result = sync_sprint(
             sprint_name, start_date=start_date, end_date=end_date, sprint_names=sprint_names,
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return compact_json(result, ensure_ascii=False, indent=2)

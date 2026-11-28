@@ -1,16 +1,18 @@
 """Add a Jira issue to a sprint on a board in its configured project."""
 
-import json
+
 
 from mcp.types import ToolAnnotations
 
 from ...core.client import request
 from .....shared import config
+from src.shared.tool_output import compact_json
 
 
 def register(server) -> None:
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
-    def jira_add_issue_to_sprint(project: str, issue: str, sprint_id: int) -> str:
+    def jira_add_issue_to_sprint(project: str, issue: str, sprint_id: int,
+                                 include_raw: bool = False) -> str:
         """Add an issue to a sprint after verifying both belong to the writable project."""
         configured = config.jira_project(project, write=True)
         issue_key = config.jira_issue_key(issue, write=True)
@@ -31,4 +33,5 @@ def register(server) -> None:
             "PUT", f"/rest/agile/1.0/sprint/{sprint_id}/issue",
             body={"issues": [issue_key]},
         )
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return compact_json(result if include_raw else {"ok": True, "issue": issue_key,
+                                                       "sprint_id": sprint_id})

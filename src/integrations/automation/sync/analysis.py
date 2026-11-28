@@ -21,8 +21,9 @@ EFFORT_HEADERS = {
     1: "Min",
     2: "Task at Min",
     7: "Mean",
-    8: "Max",
-    9: "Task at Max",
+    8: "Std",
+    9: "Max",
+    10: "Task at Max",
 }
 
 def budget_table(team_members: tuple[str, ...], first_row: int = 4) -> list[list[Formula | str]]:
@@ -151,11 +152,37 @@ def hours_logged_formula() -> Formula:
 
 def effort_column_formulas() -> dict[int, list[Formula]]:
     """Map visible Analysis columns to Hours by Person outputs."""
-    source_columns = {0: "A", 1: "G", 2: "H", 7: "K", 8: "I", 9: "J"}
+    source_columns = {0: "A", 1: "G", 2: "H", 7: "K", 8: "L", 9: "I", 10: "J"}
     return {
         column: [Formula(f"='Hours by Person'!{source_column}{row}") for row in range(2, 8)]
         for column, source_column in source_columns.items()
     }
+
+
+def standard_deviation_formulas() -> list[Formula]:
+    """Build sprint-aware sample standard deviations for completed task effort."""
+    formulas: list[Formula] = []
+    for row in range(2, 7):
+        values = "'Person Task Effort'!$I$2:$I$2000"
+        all_sprints = f"FILTER({values};'Person Task Effort'!$C$2:$C$2000=A{row};'Person Task Effort'!$F$2:$F$2000>0;'Person Task Effort'!$I$2:$I$2000>=0)"
+        selected_sprint = f"FILTER({values};'Person Task Effort'!$C$2:$C$2000=A{row};'Person Task Effort'!$F$2:$F$2000>0;'Person Task Effort'!$I$2:$I$2000>=0;'Person Task Effort'!$J$2:$J$2000=Analysis!$B$12)"
+        formulas.append(Formula(_format_stddev_formula(all_sprints, selected_sprint)))
+
+    all_sprints = "FILTER('Task Analysis'!$G$2:$G$1000;'Task Analysis'!$G$2:$G$1000>=0;'Task Analysis'!$C$2:$C$1000=\"Done\")"
+    selected_sprint = "FILTER('Task Analysis'!$G$2:$G$1000;'Task Analysis'!$G$2:$G$1000>=0;'Task Analysis'!$C$2:$C$1000=\"Done\";'Task Analysis'!$J$2:$J$1000=Analysis!$B$12)"
+    formulas.append(Formula(_format_stddev_formula(all_sprints, selected_sprint)))
+    return formulas
+
+
+def _format_stddev_formula(all_sprints: str, selected_sprint: str) -> str:
+    """Format a sample standard deviation in the dashboard's hours-per-point style."""
+    def formatted(values: str) -> str:
+        return (
+            f'IFERROR(LET(v;{values};s;STDEV.S(v);IF(ROWS(v)<2;"";'
+            f'IF(s<1;ROUND(s*60;0)&" min / SP";INT(s)&" h "&'
+            f'ROUND(MOD(s*60;60);0)&" min / SP")));"")'
+        )
+    return f'=IF(Analysis!$B$12="All sprints";{formatted(all_sprints)};{formatted(selected_sprint)})'
 
 
 def _task_status_count(status: str, all_sprints: str, selected: str) -> Formula:

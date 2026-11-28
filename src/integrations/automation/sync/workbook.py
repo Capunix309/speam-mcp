@@ -7,11 +7,11 @@ from typing import Any
 
 from ..core.normalize import sheets_serial
 from ..core.settings import AutomationSettings
-from ..core.sheets.client import SheetsClient, update_cells_request
+from ..core.sheets.client import Formula, SheetsClient, update_cells_request
 from . import analysis, burndown, issue_tables, worklog_table
 
 
-REQUIRED_SHEETS = {"Worklogs", "Analysis", "Task Analysis", "Person Task Effort", "Burndown Data", "Sprint Setup"}
+REQUIRED_SHEETS = {"Worklogs", "Analysis", "Task Analysis", "Person Task Effort", "Hours by Person", "Burndown Data", "Sprint Setup"}
 
 
 def update_workbook(
@@ -36,6 +36,8 @@ def update_workbook(
     task_formulas = client.values("Task Analysis", "A1:M1000", "FORMULA")
     person_rows = client.values("Person Task Effort", "A1:J2000")
     person_formulas = client.values("Person Task Effort", "A1:J2000", "FORMULA")
+    hours_by_person_rows = client.values("Hours by Person", "A1:L8")
+    hours_by_person_formulas = client.values("Hours by Person", "A1:L8", "FORMULA")
     setup_rows = client.values("Sprint Setup", "A1:G100")
     setup_formulas = client.values("Sprint Setup", "A1:G100", "FORMULA")
     analysis_rows = client.values("Analysis", "A1:N28")
@@ -44,12 +46,26 @@ def update_workbook(
     if not existing_worklogs or not task_rows or not person_rows or not setup_rows:
         raise ValueError("One or more workbook tables are missing their header row.")
 
+    if _cell(hours_by_person_rows, 0, 11) in (None, ""):
+        requests_header = update_cells_request(
+            sheets["Hours by Person"]["sheetId"], 0, 11, [["Std"]],
+        )
+    else:
+        requests_header = None
+
     worklog_values = worklog_table.refresh_worklogs(existing_worklogs, worklogs, sprint_name)
     task_updates, person_updates = issue_tables.plan_issue_updates(
         task_rows, person_rows, issues, sprint_name, settings,
     )
     setup_values = _sprint_setup(setup_rows, sprint_name, start_date, end_date)
     requests: list[dict[str, Any]] = []
+    if requests_header:
+        requests.append(requests_header)
+    requests.extend(_missing_formula_requests(
+        sheets["Hours by Person"]["sheetId"], 1, 11,
+        [[formula] for formula in analysis.standard_deviation_formulas()],
+        [[_cell(hours_by_person_formulas, row, 11)] for row in range(1, 7)],
+    ))
     # The original budget occupied rows 1–7 with an empty row 8 before the
     # analysis content. The two-level headers and grand-total row need one
     # additional row; detect the legacy layout so reruns remain idempotent.
@@ -92,35 +108,27 @@ def update_workbook(
     if worklog_columns < 35:
         requests.append(update_cells_request(sheets["Worklogs"]["sheetId"], 0, 33, [worklog_values[0][33:35]]))
 
-    new_task_row_set = set(new_task_rows)
     for row_index, row in task_updates:
         _extend_rows(requests, sheets["Task Analysis"], row_index + 1)
-        if row_index in new_task_row_set:
-            requests.append(update_cells_request(sheets["Task Analysis"]["sheetId"], row_index, 0, [row]))
-        else:
-            requests.extend(_missing_formula_requests(
-                sheets["Task Analysis"]["sheetId"], row_index, 0, [row],
-                [_row_or_empty(task_formulas, row_index, 13)],
-            ))
+        requests.extend(_missing_formula_requests(
+            sheets["Task Analysis"]["sheetId"], row_index, 0, [row],
+            [_row_or_empty(task_formulas, row_index, 13)],
+        ))
     _append_row_slices(
         requests, sheets["Task Analysis"]["sheetId"],
-        [(index, row) for index, row in task_updates if index not in new_task_row_set],
+        task_updates,
         [(0, 5), (8, 10)],
     )
 
-    new_person_row_set = set(new_person_rows)
     for row_index, row in person_updates:
         _extend_rows(requests, sheets["Person Task Effort"], row_index + 1)
-        if row_index in new_person_row_set:
-            requests.append(update_cells_request(sheets["Person Task Effort"]["sheetId"], row_index, 0, [row]))
-        else:
-            requests.extend(_missing_formula_requests(
-                sheets["Person Task Effort"]["sheetId"], row_index, 0, [row],
-                [_row_or_empty(person_formulas, row_index, 10)],
-            ))
+        requests.extend(_missing_formula_requests(
+            sheets["Person Task Effort"]["sheetId"], row_index, 0, [row],
+            [_row_or_empty(person_formulas, row_index, 10)],
+        ))
     _append_row_slices(
         requests, sheets["Person Task Effort"]["sheetId"],
-        [(index, row) for index, row in person_updates if index not in new_person_row_set],
+        person_updates,
         [(0, 3), (9, 10)],
     )
 
@@ -149,6 +157,14 @@ def update_workbook(
     requests.extend(_missing_formula_requests(
         analysis_id, 13, 0, summary_formulas, analysis_formulas[13:14],
     ))
+    # Keep the full-precision formula for calculations, but display hours to
+    # whole hours so the summary card does not expose repeating decimals.
+    requests.append({"repeatCell": {
+        "range": {"sheetId": analysis_id, "startRowIndex": 13, "endRowIndex": 14,
+                  "startColumnIndex": 0, "endColumnIndex": 1},
+        "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0"}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }})
     requests.extend(_changed_literal_requests(
         analysis_id, 15, 0, [[analysis.HOW_TO_READ_HEADER]], analysis_rows, analysis_formulas,
     ))
@@ -249,7 +265,9 @@ def _missing_formula_requests(
         column = 0
         while column < len(desired):
             current = existing[column] if column < len(existing) else ""
-            missing = isinstance(desired[column], Formula) and current != desired[column].expression
+            # Existing formulas belong to the workbook. Only seed a genuinely
+            # blank cell; a different formula may be an intentional user edit.
+            missing = isinstance(desired[column], Formula) and current in (None, "")
             if not missing:
                 column += 1
                 continue
@@ -257,7 +275,7 @@ def _missing_formula_requests(
             cells = []
             while column < len(desired):
                 current = existing[column] if column < len(existing) else ""
-                if not isinstance(desired[column], Formula) or current == desired[column].expression:
+                if not isinstance(desired[column], Formula) or current not in (None, ""):
                     break
                 cells.append(desired[column])
                 column += 1
@@ -482,6 +500,47 @@ def _budget_formatting(analysis_id: int, metadata: dict[str, Any], member_count:
         if not any(all(merge.get(key) == value for key, value in grid_range.items())
                    for merge in existing_merges):
             requests.append({"mergeCells": {"range": grid_range, "mergeType": "MERGE_ALL"}})
+    # Keep the budget's delta text colors current without accumulating rules on
+    # every sync. Limit deletion to rules touching delta cells in this table.
+    delta_columns = [first_person_column + i * 2 + 1 for i in range(member_count)] + [total_value_column + 1]
+    existing_rules = next((sheet.get("conditionalFormats", []) for sheet in metadata.get("sheets", [])
+                           if sheet.get("properties", {}).get("sheetId") == analysis_id), [])
+    stale_rule_indexes = []
+    for rule_index, rule in enumerate(existing_rules):
+        if any(
+            grid_range.get("sheetId") == analysis_id
+            and grid_range.get("startRowIndex", 0) < 9
+            and grid_range.get("endRowIndex", 10) > 3
+            and any(grid_range.get("startColumnIndex", 0) <= column < grid_range.get("endColumnIndex", last_column)
+                    for column in delta_columns)
+            for grid_range in rule.get("ranges", [])
+        ):
+            stale_rule_indexes.append(rule_index)
+    for rule_index in reversed(stale_rule_indexes):
+        requests.append({"deleteConditionalFormatRule": {"sheetId": analysis_id, "index": rule_index}})
+
+    person_delta_ranges = [
+        {"sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
+         "startColumnIndex": column, "endColumnIndex": column + 1}
+        for column in delta_columns[:-1]
+    ]
+    total_delta_range = [{
+        "sheetId": analysis_id, "startRowIndex": 3, "endRowIndex": 9,
+        "startColumnIndex": delta_columns[-1], "endColumnIndex": delta_columns[-1] + 1,
+    }]
+    for ranges in (person_delta_ranges, total_delta_range):
+        for condition, color in (("NUMBER_LESS", {"red": .75, "green": .14, "blue": .14}),
+                                 ("NUMBER_GREATER_THAN_EQ", {"red": .10, "green": .48, "blue": .25})):
+            requests.append({"addConditionalFormatRule": {
+                "rule": {
+                    "ranges": ranges,
+                    "booleanRule": {
+                        "condition": {"type": condition, "values": [{"userEnteredValue": "0"}]},
+                        "format": {"textFormat": {"foregroundColor": color}},
+                    },
+                },
+                "index": 0,
+            }})
     for _, delta_column in [(first_person_column + i * 2, first_person_column + i * 2 + 1)
                             for i in range(member_count)] + [(total_value_column, total_value_column + 1)]:
         requests.append({"repeatCell": {

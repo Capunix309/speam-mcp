@@ -1,10 +1,10 @@
-import json
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from mcp.types import ToolAnnotations
 from ..core import config
 from ..core.client import all_pages, normalize_space_path, page_fields
 from ..core.client import get, records
+from src.shared.tool_output import compact_json
 
 
 def _date_range_bounds(start_date: str, end_date: str, timezone_name: str) -> tuple[int, int]:
@@ -67,15 +67,18 @@ def _change_fields(item: dict) -> dict:
 def register(mcp):
     """Register this category of XWiki tools."""
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
-    def recent_changes(days: int = 30, limit: int = 50) -> str:
-        """List pages modified within the last number of days."""
+    def recent_changes(days: int = 30, limit: int = 50, include_raw: bool = False) -> str:
+        """List recent page-change summaries; include_raw returns the complete REST records."""
         if not 1 <= days <= 3650 or not 1 <= limit <= 100:
             raise ValueError("days must be 1–3650 and limit must be 1–100.")
         timestamp = int((datetime.now(timezone.utc).timestamp() - days * 86400) * 1000)
         data = get("modifications", [("date", str(timestamp)), ("start", "0"), ("number", str(limit))])
-        return json.dumps({"wiki": config.current().wiki, "days": days,
-                           "changes": records(data, "modification") or records(data, "modifications") or data},
-                          ensure_ascii=False, indent=2)
+        changes = records(data, "modification") or records(data, "modifications") or []
+        if include_raw:
+            changes = data
+        else:
+            changes = [_change_fields(item) for item in changes]
+        return compact_json({"wiki": config.current().wiki, "days": days, "changes": changes})
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
     def changes_between(
@@ -131,7 +134,7 @@ def register(mcp):
             })
             page["changeCount"] += 1
 
-        return json.dumps({
+        return compact_json({
             "wiki": config.current().wiki,
             "startDate": start_date,
             "endDate": end_date,
@@ -148,10 +151,15 @@ def register(mcp):
         }, ensure_ascii=False, indent=2)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
-    def who_wrote_pages(space: str | None = None, author: str | None = None, limit: int = 500) -> str:
-        """List page titles, creators, last editors, and modified dates."""
+    def who_wrote_pages(space: str | None = None, author: str | None = None,
+                        limit: int = 100, include_raw: bool = False) -> str:
+        """List page authorship summaries; include_raw returns all normalized metadata."""
         if not 1 <= limit <= 500:
             raise ValueError("limit must be between 1 and 500.")
-        pages = [page_fields(item) for item in all_pages(space, author, max_pages=limit)]
-        return json.dumps({"wiki": config.current().wiki, "pages": pages, "count": len(pages),
+        raw_pages = all_pages(space, author, max_pages=limit)
+        pages = raw_pages if include_raw else [page_fields(item) for item in raw_pages]
+        if not include_raw:
+            pages = [{key: page[key] for key in ("fullName", "title", "space", "pageName", "author", "lastEditor", "modified")
+                      if page.get(key)} for page in pages]
+        return compact_json({"wiki": config.current().wiki, "pages": pages, "count": len(pages),
                            "truncated": len(pages) == limit}, ensure_ascii=False, indent=2)
