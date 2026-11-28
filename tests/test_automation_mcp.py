@@ -26,11 +26,11 @@ from src.integrations.automation.core.sheets import authorize
 from src.integrations.automation.sync import analysis, burndown, issue_tables, worklog_table
 from src.integrations.automation.sync.service import sync_sprint
 from src.integrations.automation.sync.workbook import (
-    _budget_formatting,
-    _remove_overlapping_banding,
+    _budget_number_formats,
     _resize_table,
     _sprint_setup,
     _missing_formula_requests,
+    _changed_literal_requests,
     update_workbook,
 )
 from src.shared import auth_state, config
@@ -362,26 +362,6 @@ class AutomationMCPTests(unittest.TestCase):
         self.assertEqual(request["updateTable"]["table"]["range"]["endRowIndex"], 58)
         self.assertEqual(request["updateTable"]["table"]["range"]["endColumnIndex"], 33)
 
-    def test_table_expansion_removes_only_trailing_copied_banding(self):
-        table = {
-            "tableId": "table-123",
-            "range": {"sheetId": 17, "startRowIndex": 0, "endRowIndex": 67,
-                      "startColumnIndex": 0, "endColumnIndex": 31},
-        }
-        metadata = {"sheets": [{
-            "properties": {"sheetId": 17},
-            "bandedRanges": [
-                {"bandedRangeId": 100, "range": {"sheetId": 17, "startRowIndex": 0,
-                    "endRowIndex": 67, "startColumnIndex": 0, "endColumnIndex": 31}},
-                {"bandedRangeId": 101, "range": {"sheetId": 17, "startRowIndex": 67,
-                    "endRowIndex": 68, "startColumnIndex": 0, "endColumnIndex": 31}},
-            ],
-        }]}
-
-        requests = _remove_overlapping_banding(metadata, table, row_count=72)
-
-        self.assertEqual(requests, [{"deleteBanding": {"bandedRangeId": 101}}])
-
     def test_repeat_sync_replaces_sprint_rows_without_duplicates(self):
         prior = worklog_record({"issue": issue(), "worklog": worklog()}, "Sprint 1", settings())
         old = list(prior["cells"])
@@ -459,19 +439,14 @@ class AutomationMCPTests(unittest.TestCase):
         self.assertEqual(values[0][6], 13)
         self.assertEqual(values[0][5], "Expected hours per week")
 
-    def test_budget_formatting_replaces_existing_budget_rules(self):
-        metadata = {"sheets": [{"properties": {"sheetId": 17}, "conditionalFormats": [
-            {"ranges": [{"sheetId": 17, "startRowIndex": 1, "endRowIndex": 7,
-                         "startColumnIndex": 2, "endColumnIndex": 7}]},
-            {"ranges": [{"sheetId": 17, "startRowIndex": 2, "endRowIndex": 6,
-                         "startColumnIndex": 4, "endColumnIndex": 6}]},
-        ]}]}
-        requests = _budget_formatting(17, metadata)
-        self.assertEqual(sum("deleteConditionalFormatRule" in request for request in requests), 2)
-        self.assertEqual(sum("addConditionalFormatRule" in request for request in requests), 4)
-        rules = [request["addConditionalFormatRule"]["rule"] for request in requests
-                 if "addConditionalFormatRule" in request]
-        self.assertTrue(all("backgroundColor" not in rule["booleanRule"]["format"] for rule in rules))
+    def test_budget_number_formats_do_not_change_colors_or_layout(self):
+        requests = _budget_number_formats(17, member_count=2)
+        self.assertTrue(requests)
+        self.assertTrue(all("repeatCell" in request for request in requests))
+        for request in requests:
+            self.assertEqual(request["repeatCell"]["fields"], "userEnteredFormat.numberFormat")
+            self.assertNotIn("backgroundColor", request["repeatCell"]["cell"]["userEnteredFormat"])
+            self.assertNotIn("textFormat", request["repeatCell"]["cell"]["userEnteredFormat"])
 
     def test_cell_updates_are_bounded_to_the_values_being_written(self):
         request = update_cells_request(17, 4, 2, [["value"]])
@@ -484,9 +459,9 @@ class AutomationMCPTests(unittest.TestCase):
         })
 
     def test_formula_seeding_never_replaces_an_existing_formula(self):
-        desired = [[Formula("=SUM(A1:A2)"), Formula("=COUNT(A1:A2)"), "literal"]]
+        desired = [[Formula("=SUM(A1:A2)"), Formula("=COUNT(A1:A2)"), Formula("=A1+1")]]
         requests = _missing_formula_requests(
-            17, 4, 0, desired, [["=CUSTOM_FORMULA()", "", ""]],
+            17, 4, 0, desired, [["=CUSTOM_FORMULA()", "", "existing literal"]],
         )
         self.assertEqual(len(requests), 1)
         update = requests[0]["updateCells"]
@@ -494,6 +469,22 @@ class AutomationMCPTests(unittest.TestCase):
         self.assertEqual(update["range"]["endColumnIndex"], 2)
         self.assertEqual(update["rows"][0]["values"][0]["userEnteredValue"], {
             "formulaValue": "=COUNT(A1:A2)",
+        })
+
+    def test_literal_updates_never_replace_existing_formulas(self):
+        existing_values = [[] for _ in range(5)]
+        existing_values[4] = ["old result", "old literal"]
+        existing_formulas = [[] for _ in range(5)]
+        existing_formulas[4] = ["=CUSTOM_FORMULA()", "old literal"]
+        requests = _changed_literal_requests(
+            17, 4, 0, [["new source value", "also new"]],
+            existing_values, existing_formulas,
+        )
+        self.assertEqual(len(requests), 1)
+        update = requests[0]["updateCells"]
+        self.assertEqual(update["range"]["startColumnIndex"], 1)
+        self.assertEqual(update["rows"][0]["values"][0]["userEnteredValue"], {
+            "stringValue": "also new",
         })
 
     def test_sync_filters_all_project_worklogs_by_local_date_window(self):
@@ -599,6 +590,15 @@ class AutomationMCPTests(unittest.TestCase):
             item.get("updateCells", {}).get("range", {}).get("sheetId") == 3
             for item in client.batch
         ))
+        self.assertFalse(any(key in item for item in client.batch for key in (
+            "addConditionalFormatRule", "deleteConditionalFormatRule", "mergeCells",
+            "updateDimensionProperties", "deleteBanding",
+        )))
+        for item in client.batch:
+            if "repeatCell" in item:
+                self.assertEqual(item["repeatCell"]["fields"], "userEnteredFormat.numberFormat")
+            if "copyPaste" in item:
+                self.assertNotEqual(item["copyPaste"].get("pasteType"), "PASTE_FORMAT")
 
 
 if __name__ == "__main__":
